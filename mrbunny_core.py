@@ -3,8 +3,8 @@ import requests
 import json
 from PIL import Image
 import io
-from duckduckgo_search import ddg  # from duckduckgo-search package
-from bs4 import BeautifulSoup  # correct class name
+from duckduckgo_search import DDGS
+from bs4 import BeautifulSoup
 
 # ---------- uncertainty detection ----------
 UNCERTAIN_PHRASES = [
@@ -23,17 +23,21 @@ ai_conversation = []
 
 # ---------- fallback web search ----------
 def search_web_duckduckgo(query: str, max_results: int = 3) -> str:
-    results = ddg(query, max_results=max_results)
-    if not results:
-        return "No useful search results found."
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        if not results:
+            return "No useful search results found."
 
-    summary_lines = []
-    for i, item in enumerate(results, start=1):
-        title = item.get("title") or "No title"
-        snippet = item.get("body") or ""
-        url = item.get("href") or item.get("link") or ""
-        summary_lines.append(f"{i}. {title}\n{snippet}\n{url}\n")
-    return "\n".join(summary_lines)
+        summary_lines = []
+        for i, item in enumerate(results, start=1):
+            title = item.get("title") or "No title"
+            snippet = item.get("body") or ""
+            url = item.get("href") or ""
+            summary_lines.append(f"{i}. {title}\n{snippet}\n{url}\n")
+        return "\n".join(summary_lines)
+    except Exception as e:
+        return f"Search failed: {e}"
 
 # ---------- AI/chat response ----------
 def get_ai_response(prompt: str, api_key: str) -> str:
@@ -57,7 +61,7 @@ def get_ai_response(prompt: str, api_key: str) -> str:
     }
 
     data = {
-        "model": "deepseek/deepseek-r1-0528:free",  # verify this model string with OpenRouter docs
+        "model": "deepseek/deepseek-r1-0528:free",
         "messages": [{"role": "system", "content": system_prompt}] + ai_conversation
     }
 
@@ -69,11 +73,8 @@ def get_ai_response(prompt: str, api_key: str) -> str:
             timeout=15
         )
         result = response.json()
-
-        # ======= NEW SAFE EXTRACTION SECTION =======
         reply = (result.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
 
-        # Fallback if empty or uncertain
         if not reply or is_uncertain(reply):
             search_info = search_web_duckduckgo(prompt)
             fallback_msg = f"🔍 I wasn't sure about the answer, so I searched for you:\n\n{search_info}"
@@ -82,19 +83,12 @@ def get_ai_response(prompt: str, api_key: str) -> str:
 
         ai_conversation.append({"role": "assistant", "content": reply})
         return reply
-        # ============================================
 
     except Exception as e:
-        # network or other error -> fallback
-        search_info = search_web_duckduckgo(prompt)
-        return f"❌ Error calling AI: {e}\n\nFallback search:\n{search_info}"
+        return f"❌ Error calling AI: {e}"
 
 # ---------- OCR helper ----------
 def extract_text_from_image(image: Image.Image, ocr_api_key: str) -> str:
-    """
-    Use OCR.space API to extract text from a PIL Image.
-    Returns extracted text or empty string on failure.
-    """
     buffered = io.BytesIO()
     image.save(buffered, format="PNG")
     img_bytes = buffered.getvalue()
