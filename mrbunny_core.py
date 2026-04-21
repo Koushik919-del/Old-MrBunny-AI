@@ -2,6 +2,7 @@ import io
 import os
 from pathlib import Path
 import tomllib
+import base64
 
 import requests
 import streamlit as st
@@ -10,6 +11,8 @@ from duckduckgo_search import DDGS
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+CHAT_MODEL = "openai/gpt-oss-120b:free"
+IMAGE_MODEL = "google/gemini-2.5-flash-image"
 PLACEHOLDER_VALUES = {
     "",
     "your-openrouter-key",
@@ -142,7 +145,7 @@ def get_ai_response(prompt: str, api_key: str, history: list[dict] | None = None
         "Content-Type": "application/json",
     }
     data = {
-        "model": "openai/gpt-oss-120b:free",
+        "model": CHAT_MODEL,
         "messages": build_messages(prompt, history),
     }
 
@@ -167,6 +170,48 @@ def get_ai_response(prompt: str, api_key: str, history: list[dict] | None = None
         return reply
     except requests.RequestException as exc:
         return f"Error calling AI service: {exc}"
+
+
+def _decode_data_url_image(data_url: str) -> bytes:
+    if "," not in data_url:
+        raise ValueError("Invalid image data returned by API.")
+    _, encoded = data_url.split(",", 1)
+    return base64.b64decode(encoded)
+
+
+def generate_image(prompt: str, api_key: str) -> tuple[str, bytes | None]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "model": IMAGE_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"],
+    }
+
+    try:
+        response = requests.post(
+            OPENROUTER_URL,
+            headers=headers,
+            json=data,
+            timeout=60,
+        )
+        response.raise_for_status()
+        result = response.json()
+        message = result.get("choices", [{}])[0].get("message", {})
+        text = (message.get("content") or "I generated an image for you.").strip()
+        images = message.get("images") or []
+        if not images:
+            return "The model did not return an image.", None
+
+        image_url = images[0].get("image_url", {}).get("url", "")
+        if not image_url.startswith("data:image/"):
+            return "The model returned an unsupported image format.", None
+
+        return text, _decode_data_url_image(image_url)
+    except requests.RequestException as exc:
+        return f"Error generating image: {exc}", None
 
 
 def extract_text_from_image(image: Image.Image, ocr_api_key: str) -> str:

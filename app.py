@@ -6,7 +6,7 @@ import streamlit as st
 from gtts import gTTS
 from PIL import Image
 
-from mrbunny_core import extract_text_from_image, get_ai_response, get_secret
+from mrbunny_core import extract_text_from_image, generate_image, get_ai_response, get_secret
 
 
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
@@ -165,6 +165,8 @@ def render_main() -> None:
             st.write(msg["user"])
         with st.chat_message("assistant"):
             st.write(msg["ai"])
+            if msg.get("image_bytes"):
+                st.image(msg["image_bytes"], use_container_width=True)
             render_feedback(idx)
 
         if st.session_state.pending_audio == str(idx):
@@ -180,20 +182,29 @@ def render_main() -> None:
         )
 
     with st.form("chat_form", clear_on_submit=True):
-        input_col, send_col, plus_col = st.columns([6, 1, 1])
+        input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Send")
-        plus_clicked = plus_col.form_submit_button("Image")
+        upload_clicked = upload_col.form_submit_button("Upload")
+        image_clicked = image_col.form_submit_button("Draw")
 
-        if plus_clicked:
+        if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
             st.rerun()
 
-        if send_clicked:
+        if send_clicked or image_clicked:
             clean_text = user_text.strip()
             if not clean_text:
                 st.warning("Type a message before sending.")
                 return
+
+            if image_clicked:
+                with st.spinner("MrBunny is drawing..."):
+                    reply, image_bytes = generate_image(clean_text, api_key)
+                convo["messages"].append(
+                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
+                )
+                st.rerun()
 
             combined_prompt = clean_text
             if uploaded_file is not None:
@@ -208,7 +219,7 @@ def render_main() -> None:
             with st.spinner("MrBunny is thinking..."):
                 reply = get_ai_response(combined_prompt, api_key, convo["messages"])
 
-            convo["messages"].append({"user": clean_text, "ai": reply})
+            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
             st.rerun()
 
 
