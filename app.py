@@ -2,11 +2,23 @@ import re
 from io import BytesIO
 from uuid import uuid4
 
+import requests
 import streamlit as st
 from gtts import gTTS
 from PIL import Image
 
-from mrbunny_core import extract_text_from_image, generate_image, get_ai_response, get_secret
+from mrbunny_core import (
+    build_google_auth_url,
+    create_oauth_state,
+    exchange_google_code,
+    extract_text_from_image,
+    fetch_google_user,
+    generate_image,
+    get_ai_response,
+    get_secret,
+    load_user_conversations,
+    save_user_conversations,
+)
 
 
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
@@ -19,6 +31,119 @@ def init_session_state() -> None:
     st.session_state.setdefault("rename_mode", set())
     st.session_state.setdefault("feedback", {})
     st.session_state.setdefault("pending_audio", "")
+    st.session_state.setdefault("user_info", None)
+    st.session_state.setdefault("google_oauth_state", "")
+
+
+def save_current_user_chats() -> None:
+    user_info = st.session_state.get("user_info")
+    if not user_info:
+        return
+    user_id = user_info.get("sub")
+    if not user_id:
+        return
+    save_user_conversations(
+        user_id,
+        st.session_state.conversations,
+        st.session_state.current_convo,
+    )
+
+
+def load_current_user_chats() -> None:
+    user_info = st.session_state.get("user_info")
+    if not user_info:
+        st.session_state.conversations = {}
+        st.session_state.current_convo = None
+        return
+
+    user_id = user_info.get("sub")
+    if not user_id:
+        st.session_state.conversations = {}
+        st.session_state.current_convo = None
+        return
+
+    conversations, current_convo = load_user_conversations(user_id)
+    st.session_state.conversations = conversations
+    st.session_state.current_convo = current_convo
+
+
+def logout_user() -> None:
+    save_current_user_chats()
+    st.session_state.user_info = None
+    st.session_state.conversations = {}
+    st.session_state.current_convo = None
+    st.session_state.rename_mode = set()
+    st.session_state.feedback = {}
+    st.session_state.pending_audio = ""
+    st.session_state.show_image_uploader = False
+    st.session_state.google_oauth_state = ""
+    st.query_params.clear()
+    st.rerun()
+
+
+def render_login_screen() -> None:
+    st.title("🐰 MrBunny AI")
+    st.caption("Sign in with Google to see your chats.")
+
+    if not st.session_state.google_oauth_state:
+        st.session_state.google_oauth_state = create_oauth_state()
+
+    auth_url = build_google_auth_url(st.session_state.google_oauth_state)
+    if not auth_url:
+        st.error(
+            "Missing Google sign-in settings. Add `GOOGLE_CLIENT_ID`, "
+            "`GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI`."
+        )
+        st.stop()
+
+    st.markdown(
+        (
+            f'<a href="{auth_url}" target="_self">'
+            '<button style="width:100%;padding:0.9rem;border:none;border-radius:12px;'
+            'background:linear-gradient(90deg,#4285F4,#34A853);color:white;'
+            'font-weight:700;cursor:pointer;">Sign in with Google</button></a>'
+        ),
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+
+def authenticate_user() -> None:
+    if st.session_state.user_info:
+        return
+
+    error = st.query_params.get("error")
+    code = st.query_params.get("code")
+    returned_state = st.query_params.get("state")
+
+    if error:
+        st.error(f"Google sign-in failed: {error}")
+        st.query_params.clear()
+        render_login_screen()
+
+    if code:
+        if returned_state != st.session_state.google_oauth_state:
+            st.error("Google sign-in state mismatch. Please try again.")
+            st.query_params.clear()
+            st.session_state.google_oauth_state = create_oauth_state()
+            render_login_screen()
+
+        try:
+            with st.spinner("Signing you in..."):
+                token_data = exchange_google_code(code)
+                user_info = fetch_google_user(token_data["access_token"])
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            st.error(f"Google sign-in failed: {exc}")
+            st.query_params.clear()
+            st.session_state.google_oauth_state = create_oauth_state()
+            render_login_screen()
+
+        st.session_state.user_info = user_info
+        st.query_params.clear()
+        load_current_user_chats()
+        st.rerun()
+
+    render_login_screen()
 
 
 def remove_emojis(text: str) -> str:
@@ -88,6 +213,7 @@ def add_convo(name: str) -> None:
     convo_id = str(uuid4())
     st.session_state.conversations[convo_id] = {"name": clean_name, "messages": []}
     st.session_state.current_convo = convo_id
+    save_current_user_chats()
 
 
 def delete_convo(convo_id: str) -> None:
@@ -100,17 +226,25 @@ def delete_convo(convo_id: str) -> None:
     if st.session_state.current_convo == convo_id:
         remaining = list(st.session_state.conversations.keys())
         st.session_state.current_convo = remaining[0] if remaining else None
+    save_current_user_chats()
 
 
 def rename_convo(convo_id: str, new_name: str) -> None:
     clean_name = new_name.strip()
     if convo_id in st.session_state.conversations and clean_name:
         st.session_state.conversations[convo_id]["name"] = clean_name
+        save_current_user_chats()
 
 
 def render_sidebar() -> None:
     with st.sidebar:
         st.title("💬 Conversations")
+        user_info = st.session_state.user_info or {}
+        if user_info:
+            st.caption(f"Signed in as {user_info.get('name', 'Unknown user')}")
+            if st.button("Sign out", use_container_width=True):
+                logout_user()
+            st.markdown("---")
 
         with st.form("new_convo_form", clear_on_submit=True):
             new_convo_name = st.text_input("Create New Conversation")
@@ -127,6 +261,7 @@ def render_sidebar() -> None:
 
             if cols[0].button(label, key=f"select_{convo_id}", use_container_width=True):
                 st.session_state.current_convo = convo_id
+                save_current_user_chats()
                 st.rerun()
 
             if cols[1].button("Rename", key=f"rename_btn_{convo_id}", use_container_width=True):
@@ -174,7 +309,9 @@ def render_feedback(idx: int) -> None:
 
 def render_main() -> None:
     st.title("🐰 MrBunny AI")
-    st.caption("Your friendly AI assistant")
+    user_info = st.session_state.user_info or {}
+    user_name = user_info.get("name")
+    st.caption(f"Your friendly AI assistant{' for ' + user_name if user_name else ''}")
 
     api_key = get_secret("OPENROUTER_API_KEY")
     ocr_api_key = get_secret("OCR_API_KEY")
@@ -240,6 +377,7 @@ def render_main() -> None:
                 convo["messages"].append(
                     {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
                 )
+                save_current_user_chats()
                 st.rerun()
 
             combined_prompt = clean_text
@@ -256,11 +394,13 @@ def render_main() -> None:
                 reply = get_ai_response(combined_prompt, api_key, convo["messages"])
 
             convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
+            save_current_user_chats()
             st.rerun()
 
 
 def main() -> None:
     init_session_state()
+    authenticate_user()
     render_sidebar()
     render_main()
 

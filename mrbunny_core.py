@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 import tomllib
 import base64
+import json
+import secrets
+from urllib.parse import urlencode
 
 import requests
 import streamlit as st
@@ -14,6 +17,10 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 CHAT_MODEL = "openai/gpt-oss-120b:free"
 POLLINATIONS_IMAGE_URL = "https://gen.pollinations.ai/v1/images/generations"
 DEFAULT_POLLINATIONS_IMAGE_MODEL = "flux"
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+DEFAULT_GOOGLE_SCOPES = "openid email profile"
 PLACEHOLDER_VALUES = {
     "",
     "your-openrouter-key",
@@ -21,6 +28,9 @@ PLACEHOLDER_VALUES = {
     "your-real-openrouter-key",
     "your-real-ocr-space-key",
     "your-pollinations-key",
+    "your-google-client-id",
+    "your-google-client-secret",
+    "your-google-redirect-uri",
 }
 UNCERTAIN_PHRASES = [
     "no evidence",
@@ -99,6 +109,100 @@ def get_secret(name: str, default: str = "") -> str:
             return value
 
     return default.strip()
+
+
+def get_data_dir() -> Path:
+    data_dir = Path(__file__).resolve().parent / "data"
+    data_dir.mkdir(exist_ok=True)
+    return data_dir
+
+
+def get_google_redirect_uri() -> str:
+    return get_secret("GOOGLE_REDIRECT_URI")
+
+
+def build_google_auth_url(state: str) -> str:
+    client_id = get_secret("GOOGLE_CLIENT_ID")
+    redirect_uri = get_google_redirect_uri()
+    if not client_id or not redirect_uri:
+        return ""
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": DEFAULT_GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+
+
+def create_oauth_state() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def exchange_google_code(code: str) -> dict:
+    client_id = get_secret("GOOGLE_CLIENT_ID")
+    client_secret = get_secret("GOOGLE_CLIENT_SECRET")
+    redirect_uri = get_google_redirect_uri()
+    if not client_id or not client_secret or not redirect_uri:
+        raise ValueError("Missing Google OAuth configuration.")
+
+    response = requests.post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_google_user(access_token: str) -> dict:
+    response = requests.get(
+        GOOGLE_USERINFO_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def get_user_chat_path(user_id: str) -> Path:
+    safe_user_id = "".join(ch for ch in user_id if ch.isalnum() or ch in ("-", "_"))
+    return get_data_dir() / f"{safe_user_id}.json"
+
+
+def load_user_conversations(user_id: str) -> tuple[dict, str | None]:
+    path = get_user_chat_path(user_id)
+    if not path.exists():
+        return {}, None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, None
+
+    conversations = payload.get("conversations", {})
+    current_convo = payload.get("current_convo")
+    if current_convo not in conversations:
+        current_convo = next(iter(conversations), None)
+    return conversations, current_convo
+
+
+def save_user_conversations(user_id: str, conversations: dict, current_convo: str | None) -> None:
+    payload = {
+        "conversations": conversations,
+        "current_convo": current_convo,
+    }
+    get_user_chat_path(user_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def is_uncertain(response: str) -> bool:

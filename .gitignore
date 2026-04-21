@@ -208,3 +208,4 @@ __marimo__/
 .streamlit/secrets.toml
 secrets.toml
 .env
+data/
