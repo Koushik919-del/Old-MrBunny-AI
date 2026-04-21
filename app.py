@@ -70,6 +70,17 @@ def speak(text: str) -> None:
         st.warning(f"Audio generation failed: {exc}")
 
 
+def render_generated_image(image_bytes: bytes | None) -> None:
+    if not image_bytes:
+        return
+
+    try:
+        generated_image = Image.open(BytesIO(image_bytes))
+        st.image(generated_image, use_container_width=True)
+    except Exception as exc:
+        st.warning(f"Generated image could not be displayed: {exc}")
+
+
 def add_convo(name: str) -> None:
     clean_name = name.strip()
     if not clean_name:
@@ -185,9 +196,9 @@ def render_main() -> None:
         with st.chat_message("user"):
             st.write(msg["user"])
         with st.chat_message("assistant"):
-            st.write(msg["ai"])
-            if msg.get("image_bytes"):
-                st.image(msg["image_bytes"], use_container_width=True)
+            if msg["ai"]:
+                st.write(msg["ai"])
+            render_generated_image(msg.get("image_bytes"))
             render_feedback(idx)
 
         if st.session_state.pending_audio == str(idx):

@@ -214,7 +214,7 @@ def generate_image(prompt: str, api_key: str | None = None) -> tuple[str, bytes 
         if not image_b64:
             return "The model returned an unsupported image format.", None
 
-        return f"I generated an image using Pollinations `{image_model}`.", base64.b64decode(image_b64)
+        return "", base64.b64decode(image_b64)
     except requests.RequestException as exc:
         return f"Error generating image: {exc}", None
 
