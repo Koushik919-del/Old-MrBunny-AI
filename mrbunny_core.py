@@ -142,7 +142,7 @@ def get_ai_response(prompt: str, api_key: str, history: list[dict] | None = None
         "Content-Type": "application/json",
     }
     data = {
-        "model": "deepseek/deepseek-r1-0528:free",
+        "model": "openai/gpt-oss-120b:free",
         "messages": build_messages(prompt, history),
     }
 
