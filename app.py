@@ -34,6 +34,27 @@ def remove_emojis(text: str) -> str:
     return emoji_pattern.sub("", text)
 
 
+def wants_image_generation(text: str) -> bool:
+    lowered = text.lower().strip()
+    image_phrases = (
+        "draw ",
+        "draw me",
+        "make an image",
+        "generate an image",
+        "create an image",
+        "make a picture",
+        "generate a picture",
+        "create a picture",
+        "make art",
+        "generate art",
+        "create art",
+        "illustrate",
+        "image of",
+        "picture of",
+    )
+    return any(phrase in lowered for phrase in image_phrases)
+
+
 def speak(text: str) -> None:
     clean_text = remove_emojis(text).strip()
     if not clean_text:
@@ -184,9 +205,11 @@ def render_main() -> None:
     with st.form("chat_form", clear_on_submit=True):
         input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
-        send_clicked = send_col.form_submit_button("Send")
+        send_clicked = send_col.form_submit_button("Chat")
         upload_clicked = upload_col.form_submit_button("Upload")
-        image_clicked = image_col.form_submit_button("Draw")
+        image_clicked = image_col.form_submit_button("Generate Image")
+
+        st.caption("Use `Chat` for normal replies and `Generate Image` for pictures.")
 
         if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
@@ -198,7 +221,9 @@ def render_main() -> None:
                 st.warning("Type a message before sending.")
                 return
 
-            if image_clicked:
+            should_generate_image = image_clicked or wants_image_generation(clean_text)
+
+            if should_generate_image:
                 with st.spinner("MrBunny is drawing..."):
                     reply, image_bytes = generate_image(clean_text, api_key)
                 convo["messages"].append(
