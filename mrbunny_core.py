@@ -12,13 +12,15 @@ from duckduckgo_search import DDGS
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 CHAT_MODEL = "openai/gpt-oss-120b:free"
-IMAGE_MODEL = "google/gemini-2.5-flash-image"
+POLLINATIONS_IMAGE_URL = "https://gen.pollinations.ai/v1/images/generations"
+DEFAULT_POLLINATIONS_IMAGE_MODEL = "flux"
 PLACEHOLDER_VALUES = {
     "",
     "your-openrouter-key",
     "your-ocr-space-key",
     "your-real-openrouter-key",
     "your-real-ocr-space-key",
+    "your-pollinations-key",
 }
 UNCERTAIN_PHRASES = [
     "no evidence",
@@ -179,37 +181,40 @@ def _decode_data_url_image(data_url: str) -> bytes:
     return base64.b64decode(encoded)
 
 
-def generate_image(prompt: str, api_key: str) -> tuple[str, bytes | None]:
+def generate_image(prompt: str, api_key: str | None = None) -> tuple[str, bytes | None]:
+    pollinations_key = get_secret("POLLINATIONS_API_KEY")
+    if not pollinations_key:
+        return "Missing `POLLINATIONS_API_KEY` for image generation.", None
+
+    image_model = get_secret("POLLINATIONS_IMAGE_MODEL", DEFAULT_POLLINATIONS_IMAGE_MODEL)
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {pollinations_key}",
         "Content-Type": "application/json",
     }
     data = {
-        "model": IMAGE_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image", "text"],
+        "model": image_model,
+        "prompt": prompt,
+        "response_format": "b64_json",
     }
 
     try:
         response = requests.post(
-            OPENROUTER_URL,
+            POLLINATIONS_IMAGE_URL,
             headers=headers,
             json=data,
             timeout=60,
         )
         response.raise_for_status()
         result = response.json()
-        message = result.get("choices", [{}])[0].get("message", {})
-        text = (message.get("content") or "I generated an image for you.").strip()
-        images = message.get("images") or []
+        images = result.get("data") or []
         if not images:
             return "The model did not return an image.", None
 
-        image_url = images[0].get("image_url", {}).get("url", "")
-        if not image_url.startswith("data:image/"):
+        image_b64 = images[0].get("b64_json", "")
+        if not image_b64:
             return "The model returned an unsupported image format.", None
 
-        return text, _decode_data_url_image(image_url)
+        return f"I generated an image using Pollinations `{image_model}`.", base64.b64decode(image_b64)
     except requests.RequestException as exc:
         return f"Error generating image: {exc}", None
 
