@@ -1,202 +1,222 @@
-import streamlit as st
-from mrbunny_core import get_ai_response, extract_text_from_image
-from gtts import gTTS
-from uuid import uuid4
-from PIL import Image
-import os
 import re
-import tempfile
+from io import BytesIO
+from uuid import uuid4
 
-# ==== CONFIGURATION ====
+import streamlit as st
+from gtts import gTTS
+from PIL import Image
+
+from mrbunny_core import extract_text_from_image, get_ai_response, get_secret
+
+
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 
-# ==== SESSION INITIALIZATION ====
-if "conversations" not in st.session_state:
-    st.session_state.conversations = {}
-if "current_convo" not in st.session_state:
-    st.session_state.current_convo = None
-if "show_image_uploader" not in st.session_state:
-    st.session_state.show_image_uploader = False
-if "user_text" not in st.session_state:
-    st.session_state.user_text = ""
-if "busy" not in st.session_state:
-    st.session_state.busy = False
-if "rename_mode" not in st.session_state:
-    st.session_state.rename_mode = set()
 
-# ==== UTILITIES ====
-def remove_emojis(text):
+def init_session_state() -> None:
+    st.session_state.setdefault("conversations", {})
+    st.session_state.setdefault("current_convo", None)
+    st.session_state.setdefault("show_image_uploader", False)
+    st.session_state.setdefault("rename_mode", set())
+    st.session_state.setdefault("feedback", {})
+    st.session_state.setdefault("pending_audio", "")
+
+
+def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
         "["
-        u"\U0001F600-\U0001F64F"  # emoticons
-        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-        u"\U0001F680-\U0001F6FF"  # transport & map symbols
-        u"\U0001F1E0-\U0001F1FF"  # flags
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
         "]+",
-        flags=re.UNICODE
+        flags=re.UNICODE,
     )
-    return emoji_pattern.sub(r"", text)
+    return emoji_pattern.sub("", text)
 
-def speak(text):
-    clean_text = remove_emojis(text)
-    # Use temp file to avoid race and ensure cleanup
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-        try:
-            tts = gTTS(clean_text)
-            tts.save(tmp.name)
-            st.audio(tmp.name, format="audio/mp3")
-        except Exception as e:
-            st.warning(f"Audio generation failed: {e}")
-        finally:
-            try:
-                os.remove(tmp.name)
-            except OSError:
-                pass
 
-def add_convo(name):
+def speak(text: str) -> None:
+    clean_text = remove_emojis(text).strip()
+    if not clean_text:
+        st.warning("There is no readable text to play.")
+        return
+
+    try:
+        audio_buffer = BytesIO()
+        gTTS(clean_text).write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        st.audio(audio_buffer.read(), format="audio/mp3")
+    except Exception as exc:
+        st.warning(f"Audio generation failed: {exc}")
+
+
+def add_convo(name: str) -> None:
+    clean_name = name.strip()
+    if not clean_name:
+        return
     convo_id = str(uuid4())
-    st.session_state.conversations[convo_id] = {"name": name, "messages": []}
+    st.session_state.conversations[convo_id] = {"name": clean_name, "messages": []}
     st.session_state.current_convo = convo_id
 
-def delete_convo(convo_id):
-    if convo_id in st.session_state.conversations:
-        del st.session_state.conversations[convo_id]
-        if st.session_state.current_convo == convo_id:
-            st.session_state.current_convo = None
 
-def rename_convo(convo_id, new_name):
-    if convo_id in st.session_state.conversations:
-        st.session_state.conversations[convo_id]["name"] = new_name
+def delete_convo(convo_id: str) -> None:
+    if convo_id not in st.session_state.conversations:
+        return
 
-# ==== SIDEBAR ====
-with st.sidebar:
-    st.title("💬 Conversations")
+    del st.session_state.conversations[convo_id]
+    st.session_state.rename_mode.discard(convo_id)
 
-    with st.form("new_convo_form", clear_on_submit=True):
-        new_convo_name = st.text_input("➕ Create New Conversation", key="new_convo_name")
-        create_clicked = st.form_submit_button("Create")
-        if create_clicked and (new_convo_name or "").strip():
-            add_convo(new_convo_name.strip())
-            st.rerun() 
+    if st.session_state.current_convo == convo_id:
+        remaining = list(st.session_state.conversations.keys())
+        st.session_state.current_convo = remaining[0] if remaining else None
 
-    # Manage existing conversations
-    for convo_id, convo in list(st.session_state.conversations.items()):
-        is_current = convo_id == st.session_state.current_convo
-        row = st.container()
-        cols = row.columns([0.75, 0.15, 0.1])
 
-        label = f"👉 {convo['name']}" if is_current else convo["name"]
+def rename_convo(convo_id: str, new_name: str) -> None:
+    clean_name = new_name.strip()
+    if convo_id in st.session_state.conversations and clean_name:
+        st.session_state.conversations[convo_id]["name"] = clean_name
 
-        # Select conversation
-        if cols[0].button(label, key=f"select_{convo_id}"):
-            st.session_state.current_convo = convo_id
-            st.rerun()  
 
-        # Rename button toggles rename mode
-        if cols[1].button("✏️", key=f"rename_btn_{convo_id}"):
+def render_sidebar() -> None:
+    with st.sidebar:
+        st.title("💬 Conversations")
+
+        with st.form("new_convo_form", clear_on_submit=True):
+            new_convo_name = st.text_input("Create New Conversation")
+            create_clicked = st.form_submit_button("Create")
+            if create_clicked and new_convo_name.strip():
+                add_convo(new_convo_name)
+                st.rerun()
+
+        for convo_id, convo in list(st.session_state.conversations.items()):
+            is_current = convo_id == st.session_state.current_convo
+            row = st.container()
+            cols = row.columns([0.72, 0.14, 0.14])
+            label = f"👉 {convo['name']}" if is_current else convo["name"]
+
+            if cols[0].button(label, key=f"select_{convo_id}", use_container_width=True):
+                st.session_state.current_convo = convo_id
+                st.rerun()
+
+            if cols[1].button("Rename", key=f"rename_btn_{convo_id}", use_container_width=True):
+                if convo_id in st.session_state.rename_mode:
+                    st.session_state.rename_mode.remove(convo_id)
+                else:
+                    st.session_state.rename_mode.add(convo_id)
+                st.rerun()
+
+            if cols[2].button("Delete", key=f"del_{convo_id}", use_container_width=True):
+                delete_convo(convo_id)
+                st.rerun()
+
             if convo_id in st.session_state.rename_mode:
-                st.session_state.rename_mode.remove(convo_id)
-            else:
-                st.session_state.rename_mode.add(convo_id)
-            st.rerun()
+                new_name = st.text_input(
+                    "Rename to",
+                    value=convo["name"],
+                    key=f"rename_input_{convo_id}",
+                )
+                if st.button("Save name", key=f"save_rename_{convo_id}"):
+                    rename_convo(convo_id, new_name)
+                    st.session_state.rename_mode.discard(convo_id)
+                    st.rerun()
 
-        # If in rename mode, show input and save
-        if convo_id in st.session_state.rename_mode:
-            new_name = st.text_input("Rename to:", value=convo["name"], key=f"rename_input_{convo_id}")
-            if st.button("💾 Save", key=f"save_rename_{convo_id}"):
-                clean_name = (new_name or "").strip()
-                if clean_name:
-                    rename_convo(convo_id, clean_name)
-                st.session_state.rename_mode.remove(convo_id)
-                st.rerun() 
 
-        # Delete conversation
-        if cols[2].button("🗑️", key=f"del_{convo_id}"):
-            delete_convo(convo_id)
-            st.rerun()  
+def render_feedback(idx: int) -> None:
+    feedback = st.session_state.feedback
+    current = feedback.get(idx)
+    col1, col2, col3 = st.columns([0.14, 0.14, 0.72])
 
-# ==== MAIN UI ====
-st.title("🐰 MrBunny AI")
-st.caption("Your friendly AI assistant")
+    if col1.button("Play", key=f"speak_{idx}", use_container_width=True):
+        st.session_state.pending_audio = str(idx)
 
-# API keys
-api_key = st.secrets.get("OPENROUTER_API_KEY")
-ocr_api_key = st.secrets.get("OCR_API_KEY", "")
+    if col2.button("Like", key=f"like_{idx}", use_container_width=True):
+        feedback[idx] = "liked"
 
-if not api_key:
-    st.error("OpenRouter API key missing. Please add `OPENROUTER_API_KEY` to secrets.")
-    st.stop()
+    if col3.button("Dislike", key=f"dislike_{idx}", use_container_width=True):
+        feedback[idx] = "disliked"
 
-if st.session_state.current_convo:
+    if current == "liked":
+        st.caption("Liked")
+    elif current == "disliked":
+        st.caption("Disliked")
+
+
+def render_main() -> None:
+    st.title("🐰 MrBunny AI")
+    st.caption("Your friendly AI assistant")
+
+    api_key = get_secret("OPENROUTER_API_KEY")
+    ocr_api_key = get_secret("OCR_API_KEY")
+
+    if not api_key:
+        st.error(
+            "Missing `OPENROUTER_API_KEY`. Add a real key in Streamlit Cloud app secrets, "
+            "`.streamlit/secrets.toml`, `secrets.toml`, or `.env`."
+        )
+        st.stop()
+
+    if st.session_state.current_convo is None:
+        st.info("Create or select a conversation to begin chatting with MrBunny.")
+        return
+
     convo = st.session_state.conversations[st.session_state.current_convo]
 
-    # Display messages
     for idx, msg in enumerate(convo["messages"]):
-        with st.container():
-            st.markdown(f"**You:** {msg['user']}")
-            st.markdown(
-                f"<div style='background-color:#1f2937;padding:12px;border-radius:8px;color:#f8f9fa;'>🐰 {msg['ai']}</div>",
-                unsafe_allow_html=True
-            )
+        with st.chat_message("user"):
+            st.write(msg["user"])
+        with st.chat_message("assistant"):
+            st.write(msg["ai"])
+            render_feedback(idx)
 
-            # Feedback buttons row
-            fb_col1, fb_col2, fb_col3 = st.columns([0.1, 0.1, 0.8])
+        if st.session_state.pending_audio == str(idx):
+            speak(msg["ai"])
+            st.session_state.pending_audio = ""
 
-            with fb_col1:
-                if st.button("🔊", key=f"speak_{idx}"):
-                    speak(msg["ai"])
+    uploaded_file = None
+    if st.session_state.show_image_uploader:
+        uploaded_file = st.file_uploader(
+            "Upload an image",
+            type=["png", "jpg", "jpeg"],
+            key="chat_image_upload",
+        )
 
-            with fb_col2:
-                liked_key = f"liked_{idx}"
-                disliked_key = f"disliked_{idx}"
-                if st.button("👍", key=f"like_{idx}"):
-                    st.session_state[liked_key] = True
-                    st.session_state[disliked_key] = False
-                if st.session_state.get(liked_key, False):
-                    st.markdown("✅ Liked")
-
-            with fb_col3:
-                if st.button("👎", key=f"dislike_{idx}"):
-                    st.session_state[f"liked_{idx}"] = False
-                    st.session_state[f"disliked_{idx}"] = True
-                if st.session_state.get(f"disliked_{idx}", False):
-                    st.markdown("❌ Disliked")
-
-    st.divider()
-
-    # Input form
     with st.form("chat_form", clear_on_submit=True):
         input_col, send_col, plus_col = st.columns([6, 1, 1])
-        user_text = input_col.text_input("Type your message:", key="user_text", disabled=st.session_state.busy)
+        user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Send")
-        plus_clicked = plus_col.form_submit_button("➕")
+        plus_clicked = plus_col.form_submit_button("Image")
 
         if plus_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
+            st.rerun()
 
-        uploaded_file = None
-        if st.session_state.show_image_uploader:
-            uploaded_file = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
+        if send_clicked:
+            clean_text = user_text.strip()
+            if not clean_text:
+                st.warning("Type a message before sending.")
+                return
 
-        if send_clicked and (user_text or "").strip() and not st.session_state.busy:
-            st.session_state.busy = True
-            combined_prompt = user_text.strip()
-
+            combined_prompt = clean_text
             if uploaded_file is not None:
                 try:
                     image = Image.open(uploaded_file).convert("RGB")
                     ocr_text = extract_text_from_image(image, ocr_api_key)
                     if ocr_text:
-                        combined_prompt = f"[Image text extracted: {ocr_text}]\n\n{user_text.strip()}"
-                except Exception as e:
-                    st.warning(f"Failed to process uploaded image: {e}")
+                        combined_prompt = f"[Image text extracted: {ocr_text}]\n\n{clean_text}"
+                except Exception as exc:
+                    st.warning(f"Failed to process uploaded image: {exc}")
 
-            with st.spinner("🐰 MrBunny is thinking..."):
-                reply = get_ai_response(combined_prompt, api_key)
+            with st.spinner("MrBunny is thinking..."):
+                reply = get_ai_response(combined_prompt, api_key, convo["messages"])
 
-            convo["messages"].append({"user": user_text.strip(), "ai": reply})
-            st.session_state.busy = False
-            st.rerun() 
+            convo["messages"].append({"user": clean_text, "ai": reply})
+            st.rerun()
 
-else:
-    st.info("Create or select a conversation to begin chatting with MrBunny!")
+
+def main() -> None:
+    init_session_state()
+    render_sidebar()
+    render_main()
+
+
+if __name__ == "__main__":
+    main()

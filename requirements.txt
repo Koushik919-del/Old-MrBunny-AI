@@ -2,5 +2,4 @@ streamlit
 gtts
 requests
 duckduckgo-search==6.3.7
-beautifulsoup4
 Pillow
