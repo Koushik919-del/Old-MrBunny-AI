@@ -2,7 +2,6 @@ import re
 from io import BytesIO
 from uuid import uuid4
 
-import requests
 import streamlit as st
 from gtts import gTTS
 from PIL import Image
@@ -21,10 +20,6 @@ from mrbunny_core import (
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 
 BROWSER_DEVICE_KEY = "mrbunny_device_id_v1"
-PIXVERSE_TEXT_TO_VIDEO_URL = "https://app-api.pixverse.ai/openapi/v2/video/text/generate"
-PIXVERSE_STATUS_URL = "https://app-api.pixverse.ai/openapi/v2/video/result/{video_id}"
-PIXVERSE_API_KEY_FALLBACK = "sk-d60b94d64385c5108af8d111c80063c6"
-POLLINATIONS_AUDIO_URL = "https://gen.pollinations.ai/v1/audio/speech"
 
 
 def init_session_state() -> None:
@@ -94,6 +89,7 @@ def clear_saved_chats() -> None:
     st.rerun()
 
 
+
 def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
         "["
@@ -128,92 +124,6 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
-def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect_ratio: str = "16:9") -> tuple[str, str | None]:
-    """
-    Generate a video using the PixVerse API (text-to-video).
-    Returns (reply_text, video_url) — stores URL, not bytes, to avoid black screen.
-    """
-    import time
-
-    headers = {
-        "API-KEY": pixverse_api_key,
-        "Ai-trace-id": uuid4().hex,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "prompt": prompt,
-        "aspect_ratio": aspect_ratio,
-        "duration": duration,
-        "model": "v5",
-        "quality": "540p",
-    }
-
-    try:
-        resp = requests.post(PIXVERSE_TEXT_TO_VIDEO_URL, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("ErrCode", -1) != 0:
-            return f"PixVerse error: {data.get('ErrMsg', 'Unknown error')}", None
-
-        video_id = data["Resp"]["video_id"]
-        status_url = PIXVERSE_STATUS_URL.format(video_id=video_id)
-        status_headers = {"API-KEY": pixverse_api_key, "Ai-trace-id": uuid4().hex}
-
-        for _ in range(60):
-            time.sleep(3)
-            status_resp = requests.get(status_url, headers=status_headers, timeout=15)
-            status_resp.raise_for_status()
-            status_data = status_resp.json()
-            status = status_data.get("Resp", {}).get("status")
-
-            if status == 1:
-                video_url = status_data["Resp"]["url"]
-                return "Here is your generated video! 🎬", video_url
-            elif status in (7, 8):
-                msg = "Content moderation failed — try a different prompt." if status == 7 else "Generation failed."
-                return f"PixVerse: {msg}", None
-
-        return "Video generation timed out. Try again shortly.", None
-
-    except requests.HTTPError as exc:
-        return f"Video generation failed (HTTP {exc.response.status_code}): {exc}", None
-    except Exception as exc:
-        return f"Video generation failed: {exc}", None
-
-
-
-def generate_music(prompt: str, pollinations_key: str, duration: int = 30, instrumental: bool = False, style: str = "") -> tuple[str, bytes | None]:
-    """
-    Generate music using Pollinations ACE-Step via the OpenAI-compatible TTS endpoint.
-    Returns (reply_text, audio_bytes).
-    """
-    try:
-        body = {
-            "model": "acestep",
-            "input": prompt,
-            "duration": duration,
-            "instrumental": instrumental,
-        }
-        if style:
-            body["style"] = style
-
-        resp = requests.post(
-            POLLINATIONS_AUDIO_URL,
-            headers={
-                "Authorization": f"Bearer {pollinations_key}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return "Here is your generated music! 🎵", resp.content
-    except requests.HTTPError as exc:
-        return f"Music generation failed (HTTP {exc.response.status_code}): {exc}", None
-    except Exception as exc:
-        return f"Music generation failed: {exc}", None
-
-
 def speak(text: str) -> None:
     clean_text = remove_emojis(text).strip()
     if not clean_text:
@@ -238,29 +148,6 @@ def render_generated_image(image_bytes: bytes | None) -> None:
         st.image(generated_image, use_container_width=True)
     except Exception as exc:
         st.warning(f"Generated image could not be displayed: {exc}")
-
-
-def render_generated_video(video_url: str | None) -> None:
-    if not video_url:
-        return
-    # Use HTML video tag for reliable playback — st.video() can show black screen with remote URLs
-    st.markdown(
-        f'''<video controls autoplay style="width:100%;border-radius:8px">
-  <source src="{video_url}" type="video/mp4">
-  <a href="{video_url}" target="_blank">Download video</a>
-</video>''',
-        unsafe_allow_html=True,
-    )
-
-
-
-def render_generated_music(music_bytes: bytes | None) -> None:
-    if not music_bytes:
-        return
-    try:
-        st.audio(music_bytes, format="audio/mp3")
-    except Exception as exc:
-        st.warning(f"Music could not be played: {exc}")
 
 
 def add_convo(name: str) -> None:
@@ -389,8 +276,6 @@ def render_main() -> None:
 
     api_key = get_secret("OPENROUTER_API_KEY")
     ocr_api_key = get_secret("OCR_API_KEY")
-    pixverse_api_key = get_secret("PIXVERSE_API_KEY") or PIXVERSE_API_KEY_FALLBACK
-    pollinations_key = get_secret("POLLINATIONS_API_KEY") or "sk_3wQt8JR0UCFgemr2fnNDTfSbnq8MqguC"
 
     if not api_key:
         st.error(
@@ -398,7 +283,6 @@ def render_main() -> None:
             "`.streamlit/secrets.toml`, `secrets.toml`, or `.env`."
         )
         st.stop()
-
 
     if st.session_state.current_convo is None:
         st.info("Create or select a conversation to begin chatting with MrBunny.")
@@ -417,8 +301,6 @@ def render_main() -> None:
             if msg["ai"]:
                 st.write(msg["ai"])
             render_generated_image(msg.get("image_bytes"))
-            render_generated_video(msg.get("video_url"))
-            render_generated_music(msg.get("music_bytes"))
             render_feedback(idx)
 
         if st.session_state.pending_audio == str(idx):
@@ -434,49 +316,61 @@ def render_main() -> None:
         )
 
     with st.form("chat_form", clear_on_submit=True):
-        input_col, send_col, upload_col, image_col, video_col, music_col = st.columns([4, 1, 1, 1, 1, 1])
+        input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Chat")
         upload_clicked = upload_col.form_submit_button("📥 Upload")
-        image_clicked = image_col.form_submit_button("🎨 Image")
-        video_clicked = video_col.form_submit_button("🎬 Video")
-        music_clicked = music_col.form_submit_button("🎵 Music")
+        image_clicked = image_col.form_submit_button("🎨 Generate Image")
 
-        st.caption("Use `Chat` for replies, `🎨 Image` for pictures, `🎬 Video` for video, and `🎵 Music` to generate music.")
+        st.caption("Use `Chat` for replies and `🎨 Generate Image` for pictures.")
 
         if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
             st.rerun()
 
-
-        if music_clicked:
+        if send_clicked or image_clicked:
             clean_text = user_text.strip()
             if not clean_text:
-                st.warning("Describe the music you want to generate.")
+                st.warning("Type a message before sending.")
                 return
 
-            with st.spinner("MrBunny is composing... 🎵 (this may take ~30 seconds)"):
-                reply, music_bytes = generate_music(clean_text, pollinations_key)
+            should_generate_image = image_clicked or wants_image_generation(clean_text)
 
-            convo["messages"].append(
-                {"user": clean_text, "ai": reply, "image_bytes": None, "video_url": None, "music_bytes": music_bytes}
-            )
+            if should_generate_image:
+                with st.spinner("MrBunny is drawing..."):
+                    reply, image_bytes = generate_image(clean_text, api_key)
+                convo["messages"].append(
+                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
+                )
+                if not ghost_enabled:
+                    save_device_chats()
+                st.rerun()
+
+            combined_prompt = clean_text
+            if uploaded_file is not None:
+                try:
+                    image = Image.open(uploaded_file).convert("RGB")
+                    ocr_text = extract_text_from_image(image, ocr_api_key)
+                    if ocr_text:
+                        combined_prompt = f"[Image text extracted: {ocr_text}]\n\n{clean_text}"
+                except Exception as exc:
+                    st.warning(f"Failed to process uploaded image: {exc}")
+
+            with st.spinner("MrBunny is thinking..."):
+                reply = get_ai_response(combined_prompt, api_key, convo["messages"])
+
+            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
             if not ghost_enabled:
                 save_device_chats()
             st.rerun()
 
-        if video_clicked:
-            clean_text = user_text.strip()
-            if not clean_text:
-                st.warning("Describe the video you want to generate.")
-                return
 
-            with st.spinner("MrBunny is filming... 🎬 (this can take 1–3 minutes)"):
-                reply, video_url = generate_video(clean_text, pixverse_api_key)
+def main() -> None:
+    init_session_state()
+    load_device_state()
+    render_sidebar()
+    render_main()
 
-            convo["messages"].append(
-                {"user": clean_text, "ai": reply, "image_bytes": None, "video_url": video_url}
-            )
-            if not ghost_enabled:
-                save_device_chats()
-            st.rerun()
+
+if __name__ == "__main__":
+    main()
