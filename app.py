@@ -203,14 +203,14 @@ def render_sidebar() -> None:
                 save_browser_chats()
                 st.rerun()
 
-            if cols[1].button("Rename", key=f"rename_btn_{convo_id}", use_container_width=True):
+            if cols[1].button("✍️", key=f"rename_btn_{convo_id}", use_container_width=True, help="Rename"):
                 if convo_id in st.session_state.rename_mode:
                     st.session_state.rename_mode.remove(convo_id)
                 else:
                     st.session_state.rename_mode.add(convo_id)
                 st.rerun()
 
-            if cols[2].button("Delete", key=f"del_{convo_id}", use_container_width=True):
+            if cols[2].button("🗑️", key=f"del_{convo_id}", use_container_width=True, help="Delete"):
                 delete_convo(convo_id)
                 st.rerun()
 
