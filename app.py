@@ -146,7 +146,8 @@ def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
         resp.raise_for_status()
         return "Here is your generated music! 🎵", resp.content
     except requests.HTTPError as exc:
-        return f"Music generation failed (HTTP {exc.response.status_code}): {exc}", None
+        error_detail = exc.response.text
+        return f"Music generation failed (HTTP {exc.response.status_code}): {error_detail}", None
     except Exception as exc:
         return f"Music generation failed: {exc}", None
 
