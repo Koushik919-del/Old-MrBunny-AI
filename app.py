@@ -1,5 +1,6 @@
 import re
 import json
+import base64
 from io import BytesIO
 from uuid import uuid4
 
@@ -48,6 +49,54 @@ def _parse_storage_value(value, default):
     return value
 
 
+def _serialize_conversations(conversations: dict) -> dict:
+    serialized = {}
+    for convo_id, convo in conversations.items():
+        serialized_messages = []
+        for msg in convo.get("messages", []):
+            image_bytes = msg.get("image_bytes")
+            serialized_messages.append(
+                {
+                    "user": msg.get("user", ""),
+                    "ai": msg.get("ai", ""),
+                    "image_bytes": (
+                        base64.b64encode(image_bytes).decode("utf-8")
+                        if image_bytes is not None
+                        else None
+                    ),
+                }
+            )
+        serialized[convo_id] = {
+            "name": convo.get("name", "Untitled Chat"),
+            "messages": serialized_messages,
+        }
+    return serialized
+
+
+def _deserialize_conversations(conversations: dict) -> dict:
+    deserialized = {}
+    for convo_id, convo in conversations.items():
+        deserialized_messages = []
+        for msg in convo.get("messages", []):
+            image_payload = msg.get("image_bytes")
+            deserialized_messages.append(
+                {
+                    "user": msg.get("user", ""),
+                    "ai": msg.get("ai", ""),
+                    "image_bytes": (
+                        base64.b64decode(image_payload)
+                        if image_payload
+                        else None
+                    ),
+                }
+            )
+        deserialized[convo_id] = {
+            "name": convo.get("name", "Untitled Chat"),
+            "messages": deserialized_messages,
+        }
+    return deserialized
+
+
 def load_browser_chats() -> None:
     if st.session_state.browser_storage_loaded:
         return
@@ -56,7 +105,8 @@ def load_browser_chats() -> None:
     stored_conversations = local_storage.getItem(BROWSER_CONVERSATIONS_KEY)
     stored_current = local_storage.getItem(BROWSER_CURRENT_CONVO_KEY)
 
-    st.session_state.conversations = _parse_storage_value(stored_conversations, {})
+    parsed_conversations = _parse_storage_value(stored_conversations, {})
+    st.session_state.conversations = _deserialize_conversations(parsed_conversations)
     st.session_state.current_convo = _parse_storage_value(stored_current, None)
     if st.session_state.current_convo not in st.session_state.conversations:
         st.session_state.current_convo = next(iter(st.session_state.conversations), None)
@@ -76,8 +126,9 @@ def save_browser_chats() -> None:
 
     local_storage = get_local_storage()
     erase_item = getattr(local_storage, "eraseItem", None)
+    serializable_conversations = _serialize_conversations(persisted_conversations)
 
-    if not persisted_conversations:
+    if not serializable_conversations:
         if callable(erase_item):
             erase_item(BROWSER_CONVERSATIONS_KEY, key="browser_conversations_eraser")
             erase_item(BROWSER_CURRENT_CONVO_KEY, key="browser_current_eraser")
@@ -85,7 +136,7 @@ def save_browser_chats() -> None:
 
     local_storage.setItem(
         BROWSER_CONVERSATIONS_KEY,
-        json.dumps(persisted_conversations),
+        json.dumps(serializable_conversations),
         key="browser_conversations_saver",
     )
     if persisted_current is None:
