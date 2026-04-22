@@ -180,6 +180,54 @@ def get_user_chat_path(user_id: str) -> Path:
     return get_data_dir() / f"{safe_user_id}.json"
 
 
+def _serialize_conversations(conversations: dict) -> dict:
+    serialized = {}
+    for convo_id, convo in conversations.items():
+        serialized_messages = []
+        for msg in convo.get("messages", []):
+            image_bytes = msg.get("image_bytes")
+            serialized_messages.append(
+                {
+                    "user": msg.get("user", ""),
+                    "ai": msg.get("ai", ""),
+                    "image_bytes": (
+                        base64.b64encode(image_bytes).decode("utf-8")
+                        if image_bytes is not None
+                        else None
+                    ),
+                }
+            )
+        serialized[convo_id] = {
+            "name": convo.get("name", "Untitled Chat"),
+            "messages": serialized_messages,
+        }
+    return serialized
+
+
+def _deserialize_conversations(conversations: dict) -> dict:
+    deserialized = {}
+    for convo_id, convo in conversations.items():
+        deserialized_messages = []
+        for msg in convo.get("messages", []):
+            image_payload = msg.get("image_bytes")
+            deserialized_messages.append(
+                {
+                    "user": msg.get("user", ""),
+                    "ai": msg.get("ai", ""),
+                    "image_bytes": (
+                        base64.b64decode(image_payload)
+                        if image_payload
+                        else None
+                    ),
+                }
+            )
+        deserialized[convo_id] = {
+            "name": convo.get("name", "Untitled Chat"),
+            "messages": deserialized_messages,
+        }
+    return deserialized
+
+
 def load_user_conversations(user_id: str) -> tuple[dict, str | None]:
     path = get_user_chat_path(user_id)
     if not path.exists():
@@ -190,7 +238,7 @@ def load_user_conversations(user_id: str) -> tuple[dict, str | None]:
     except (OSError, json.JSONDecodeError):
         return {}, None
 
-    conversations = payload.get("conversations", {})
+    conversations = _deserialize_conversations(payload.get("conversations", {}))
     current_convo = payload.get("current_convo")
     if current_convo not in conversations:
         current_convo = next(iter(conversations), None)
@@ -199,7 +247,7 @@ def load_user_conversations(user_id: str) -> tuple[dict, str | None]:
 
 def save_user_conversations(user_id: str, conversations: dict, current_convo: str | None) -> None:
     payload = {
-        "conversations": conversations,
+        "conversations": _serialize_conversations(conversations),
         "current_convo": current_convo,
     }
     get_user_chat_path(user_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")

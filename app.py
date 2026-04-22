@@ -1,6 +1,4 @@
 import re
-import json
-import base64
 from io import BytesIO
 from uuid import uuid4
 
@@ -14,13 +12,14 @@ from mrbunny_core import (
     generate_image,
     get_ai_response,
     get_secret,
+    load_user_conversations,
+    save_user_conversations,
 )
 
 
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 
-BROWSER_CONVERSATIONS_KEY = "mrbunny_conversations_v1"
-BROWSER_CURRENT_CONVO_KEY = "mrbunny_current_convo_v1"
+BROWSER_DEVICE_KEY = "mrbunny_device_id_v1"
 
 
 def init_session_state() -> None:
@@ -30,8 +29,9 @@ def init_session_state() -> None:
     st.session_state.setdefault("rename_mode", set())
     st.session_state.setdefault("feedback", {})
     st.session_state.setdefault("pending_audio", "")
-    st.session_state.setdefault("browser_storage_loaded", False)
-    st.session_state.setdefault("browser_storage_attempts", 0)
+    st.session_state.setdefault("device_id", None)
+    st.session_state.setdefault("device_storage_loaded", False)
+    st.session_state.setdefault("device_storage_attempts", 0)
     st.session_state.setdefault("ghost_conversations", set())
 
 
@@ -39,92 +39,34 @@ def get_local_storage() -> LocalStorage:
     return LocalStorage()
 
 
-def _parse_storage_value(value, default):
-    if value in (None, ""):
-        return default
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return default
-    return value
-
-
-def _serialize_conversations(conversations: dict) -> dict:
-    serialized = {}
-    for convo_id, convo in conversations.items():
-        serialized_messages = []
-        for msg in convo.get("messages", []):
-            image_bytes = msg.get("image_bytes")
-            serialized_messages.append(
-                {
-                    "user": msg.get("user", ""),
-                    "ai": msg.get("ai", ""),
-                    "image_bytes": (
-                        base64.b64encode(image_bytes).decode("utf-8")
-                        if image_bytes is not None
-                        else None
-                    ),
-                }
-            )
-        serialized[convo_id] = {
-            "name": convo.get("name", "Untitled Chat"),
-            "messages": serialized_messages,
-        }
-    return serialized
-
-
-def _deserialize_conversations(conversations: dict) -> dict:
-    deserialized = {}
-    for convo_id, convo in conversations.items():
-        deserialized_messages = []
-        for msg in convo.get("messages", []):
-            image_payload = msg.get("image_bytes")
-            deserialized_messages.append(
-                {
-                    "user": msg.get("user", ""),
-                    "ai": msg.get("ai", ""),
-                    "image_bytes": (
-                        base64.b64decode(image_payload)
-                        if image_payload
-                        else None
-                    ),
-                }
-            )
-        deserialized[convo_id] = {
-            "name": convo.get("name", "Untitled Chat"),
-            "messages": deserialized_messages,
-        }
-    return deserialized
-
-
-def load_browser_chats() -> None:
-    if st.session_state.browser_storage_loaded:
+def load_device_state() -> None:
+    if st.session_state.device_storage_loaded:
         return
 
     local_storage = get_local_storage()
-    stored_conversations = local_storage.getItem(BROWSER_CONVERSATIONS_KEY)
-    stored_current = local_storage.getItem(BROWSER_CURRENT_CONVO_KEY)
-
-    if (
-        stored_conversations in (None, "")
-        and stored_current in (None, "")
-        and st.session_state.browser_storage_attempts < 1
-    ):
-        st.session_state.browser_storage_attempts += 1
+    device_id = local_storage.getItem(BROWSER_DEVICE_KEY)
+    if device_id in (None, "") and st.session_state.device_storage_attempts < 1:
+        st.session_state.device_storage_attempts += 1
         st.rerun()
 
-    parsed_conversations = _parse_storage_value(stored_conversations, {})
-    st.session_state.conversations = _deserialize_conversations(parsed_conversations)
-    st.session_state.current_convo = _parse_storage_value(stored_current, None)
-    if st.session_state.current_convo not in st.session_state.conversations:
-        st.session_state.current_convo = next(iter(st.session_state.conversations), None)
+    if not device_id:
+        device_id = uuid4().hex
+        local_storage.setItem(BROWSER_DEVICE_KEY, device_id, key="browser_device_id_saver")
+
+    st.session_state.device_id = device_id
+    conversations, current_convo = load_user_conversations(device_id)
+    st.session_state.conversations = conversations
+    st.session_state.current_convo = current_convo
     st.session_state.ghost_conversations = set()
-    st.session_state.browser_storage_attempts = 0
-    st.session_state.browser_storage_loaded = True
+    st.session_state.device_storage_attempts = 0
+    st.session_state.device_storage_loaded = True
 
 
-def save_browser_chats() -> None:
+def save_device_chats() -> None:
+    device_id = st.session_state.device_id
+    if not device_id:
+        return
+
     persisted_conversations = {
         convo_id: convo
         for convo_id, convo in st.session_state.conversations.items()
@@ -133,48 +75,17 @@ def save_browser_chats() -> None:
     persisted_current = st.session_state.current_convo
     if persisted_current not in persisted_conversations:
         persisted_current = next(iter(persisted_conversations), None)
-
-    local_storage = get_local_storage()
-    erase_item = getattr(local_storage, "eraseItem", None)
-    serializable_conversations = _serialize_conversations(persisted_conversations)
-
-    if not serializable_conversations:
-        if callable(erase_item):
-            erase_item(BROWSER_CONVERSATIONS_KEY, key="browser_conversations_eraser")
-            erase_item(BROWSER_CURRENT_CONVO_KEY, key="browser_current_eraser")
-            return
-
-    local_storage.setItem(
-        BROWSER_CONVERSATIONS_KEY,
-        json.dumps(serializable_conversations),
-        key="browser_conversations_saver",
-    )
-    if persisted_current is None:
-        if callable(erase_item):
-            erase_item(BROWSER_CURRENT_CONVO_KEY, key="browser_current_eraser")
-        else:
-            local_storage.setItem(
-                BROWSER_CURRENT_CONVO_KEY,
-                json.dumps(None),
-                key="browser_current_saver",
-            )
-    else:
-        local_storage.setItem(
-            BROWSER_CURRENT_CONVO_KEY,
-            json.dumps(persisted_current),
-            key="browser_current_saver",
-        )
+    save_user_conversations(device_id, persisted_conversations, persisted_current)
 
 
-def clear_browser_chats() -> None:
+def clear_saved_chats() -> None:
     st.session_state.conversations = {}
     st.session_state.current_convo = None
     st.session_state.rename_mode = set()
     st.session_state.feedback = {}
     st.session_state.pending_audio = ""
     st.session_state.ghost_conversations = set()
-    st.session_state.browser_storage_attempts = 0
-    save_browser_chats()
+    save_device_chats()
     st.rerun()
 
 
@@ -247,7 +158,7 @@ def add_convo(name: str) -> None:
     st.session_state.conversations[convo_id] = {"name": clean_name, "messages": []}
     st.session_state.current_convo = convo_id
     st.session_state.ghost_conversations.discard(convo_id)
-    save_browser_chats()
+    save_device_chats()
 
 
 def delete_convo(convo_id: str) -> None:
@@ -261,14 +172,14 @@ def delete_convo(convo_id: str) -> None:
     if st.session_state.current_convo == convo_id:
         remaining = list(st.session_state.conversations.keys())
         st.session_state.current_convo = remaining[0] if remaining else None
-    save_browser_chats()
+    save_device_chats()
 
 
 def rename_convo(convo_id: str, new_name: str) -> None:
     clean_name = new_name.strip()
     if convo_id in st.session_state.conversations and clean_name:
         st.session_state.conversations[convo_id]["name"] = clean_name
-        save_browser_chats()
+        save_device_chats()
 
 
 def toggle_ghost_mode(convo_id: str) -> None:
@@ -276,15 +187,15 @@ def toggle_ghost_mode(convo_id: str) -> None:
         st.session_state.ghost_conversations.remove(convo_id)
     else:
         st.session_state.ghost_conversations.add(convo_id)
-    save_browser_chats()
+    save_device_chats()
 
 
 def render_sidebar() -> None:
     with st.sidebar:
         st.title("💬 Conversations")
-        st.caption("Chats are saved in this browser on this device.")
+        st.caption("Chats are saved for this device without sign-in.")
         if st.button("Clear saved chats", use_container_width=True):
-            clear_browser_chats()
+            clear_saved_chats()
         st.markdown("---")
 
         current_convo = st.session_state.current_convo
@@ -313,7 +224,7 @@ def render_sidebar() -> None:
 
             if cols[0].button(label, key=f"select_{convo_id}", use_container_width=True):
                 st.session_state.current_convo = convo_id
-                save_browser_chats()
+                save_device_chats()
                 st.rerun()
 
             if cols[1].button("✍️", key=f"rename_btn_{convo_id}", use_container_width=True, help="Rename"):
@@ -432,7 +343,7 @@ def render_main() -> None:
                     {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
                 )
                 if not ghost_enabled:
-                    save_browser_chats()
+                    save_device_chats()
                 st.rerun()
 
             combined_prompt = clean_text
@@ -450,13 +361,13 @@ def render_main() -> None:
 
             convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
             if not ghost_enabled:
-                save_browser_chats()
+                save_device_chats()
             st.rerun()
 
 
 def main() -> None:
     init_session_state()
-    load_browser_chats()
+    load_device_state()
     render_sidebar()
     render_main()
 
