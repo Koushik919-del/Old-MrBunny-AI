@@ -75,16 +75,34 @@ def save_browser_chats() -> None:
         persisted_current = next(iter(persisted_conversations), None)
 
     local_storage = get_local_storage()
+    erase_item = getattr(local_storage, "eraseItem", None)
+
+    if not persisted_conversations:
+        if callable(erase_item):
+            erase_item(BROWSER_CONVERSATIONS_KEY, key="browser_conversations_eraser")
+            erase_item(BROWSER_CURRENT_CONVO_KEY, key="browser_current_eraser")
+            return
+
     local_storage.setItem(
         BROWSER_CONVERSATIONS_KEY,
         json.dumps(persisted_conversations),
         key="browser_conversations_saver",
     )
-    local_storage.setItem(
-        BROWSER_CURRENT_CONVO_KEY,
-        json.dumps(persisted_current),
-        key="browser_current_saver",
-    )
+    if persisted_current is None:
+        if callable(erase_item):
+            erase_item(BROWSER_CURRENT_CONVO_KEY, key="browser_current_eraser")
+        else:
+            local_storage.setItem(
+                BROWSER_CURRENT_CONVO_KEY,
+                json.dumps(None),
+                key="browser_current_saver",
+            )
+    else:
+        local_storage.setItem(
+            BROWSER_CURRENT_CONVO_KEY,
+            json.dumps(persisted_current),
+            key="browser_current_saver",
+        )
 
 
 def clear_browser_chats() -> None:
