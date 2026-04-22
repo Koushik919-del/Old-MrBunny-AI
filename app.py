@@ -127,18 +127,16 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
-def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect_ratio: str = "16:9") -> tuple[str, bytes | None]:
+def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect_ratio: str = "16:9") -> tuple[str, str | None]:
     """
     Generate a video using the PixVerse API (text-to-video).
-    1. POST to kick off generation → get video_id
-    2. Poll status endpoint until complete (status=1)
-    3. Download and return the video bytes
+    Returns (reply_text, video_url) — stores URL, not bytes, to avoid black screen.
     """
     import time
 
     headers = {
         "API-KEY": pixverse_api_key,
-        "Ai-trace-id": uuid4().hex,  # must be unique per request
+        "Ai-trace-id": uuid4().hex,
         "Content-Type": "application/json",
     }
     payload = {
@@ -150,7 +148,6 @@ def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect
     }
 
     try:
-        # Step 1: submit generation job
         resp = requests.post(PIXVERSE_TEXT_TO_VIDEO_URL, headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         data = resp.json()
@@ -158,14 +155,10 @@ def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect
             return f"PixVerse error: {data.get('ErrMsg', 'Unknown error')}", None
 
         video_id = data["Resp"]["video_id"]
-
-        # Step 2: poll until done (status 1=done, 5=in progress, 7=moderated, 8=failed)
         status_url = PIXVERSE_STATUS_URL.format(video_id=video_id)
-        status_headers = {
-            "API-KEY": pixverse_api_key,
-            "Ai-trace-id": uuid4().hex,
-        }
-        for _ in range(60):  # poll up to ~3 minutes (60 × 3s)
+        status_headers = {"API-KEY": pixverse_api_key, "Ai-trace-id": uuid4().hex}
+
+        for _ in range(60):
             time.sleep(3)
             status_resp = requests.get(status_url, headers=status_headers, timeout=15)
             status_resp.raise_for_status()
@@ -174,10 +167,9 @@ def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect
 
             if status == 1:
                 video_url = status_data["Resp"]["url"]
-                video_bytes = requests.get(video_url, timeout=120).content
-                return "Here is your generated video! 🎬", video_bytes
+                return "Here is your generated video! 🎬", video_url
             elif status in (7, 8):
-                msg = "Content moderation failed." if status == 7 else "Generation failed."
+                msg = "Content moderation failed — try a different prompt." if status == 7 else "Generation failed."
                 return f"PixVerse: {msg}", None
 
         return "Video generation timed out. Try again shortly.", None
@@ -214,14 +206,17 @@ def render_generated_image(image_bytes: bytes | None) -> None:
         st.warning(f"Generated image could not be displayed: {exc}")
 
 
-def render_generated_video(video_bytes: bytes | None) -> None:
-    if not video_bytes:
+def render_generated_video(video_url: str | None) -> None:
+    if not video_url:
         return
-
-    try:
-        st.video(video_bytes)
-    except Exception as exc:
-        st.warning(f"Generated video could not be displayed: {exc}")
+    # Use HTML video tag for reliable playback — st.video() can show black screen with remote URLs
+    st.markdown(
+        f'''<video controls autoplay style="width:100%;border-radius:8px">
+  <source src="{video_url}" type="video/mp4">
+  <a href="{video_url}" target="_blank">Download video</a>
+</video>''',
+        unsafe_allow_html=True,
+    )
 
 
 def add_convo(name: str) -> None:
@@ -377,7 +372,7 @@ def render_main() -> None:
             if msg["ai"]:
                 st.write(msg["ai"])
             render_generated_image(msg.get("image_bytes"))
-            render_generated_video(msg.get("video_bytes"))
+            render_generated_video(msg.get("video_url"))
             render_feedback(idx)
 
         if st.session_state.pending_audio == str(idx):
@@ -413,10 +408,10 @@ def render_main() -> None:
                 return
 
             with st.spinner("MrBunny is filming... 🎬 (this can take 1–3 minutes)"):
-                reply, video_bytes = generate_video(clean_text, pixverse_api_key)
+                reply, video_url = generate_video(clean_text, pixverse_api_key)
 
             convo["messages"].append(
-                {"user": clean_text, "ai": reply, "image_bytes": None, "video_bytes": video_bytes}
+                {"user": clean_text, "ai": reply, "image_bytes": None, "video_url": video_url}
             )
             if not ghost_enabled:
                 save_device_chats()
