@@ -2,6 +2,7 @@ import re
 from io import BytesIO
 from uuid import uuid4
 
+import requests
 import streamlit as st
 from gtts import gTTS
 from PIL import Image
@@ -20,6 +21,8 @@ from mrbunny_core import (
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 
 BROWSER_DEVICE_KEY = "mrbunny_device_id_v1"
+POLLINATIONS_VIDEO_API = "https://image.pollinations.ai/prompt/"  # placeholder base
+POLLINATIONS_VIDEO_KEY = "sk_ZUJpgD3ojyJVayJMNJGmw2MoHxURzyMv"
 
 
 def init_session_state() -> None:
@@ -89,7 +92,6 @@ def clear_saved_chats() -> None:
     st.rerun()
 
 
-
 def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
         "["
@@ -124,6 +126,39 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
+def generate_video(prompt: str) -> tuple[str, bytes | None]:
+    """
+    Call the Pollinations.ai video generation API.
+    Returns (reply_text, video_bytes_or_None).
+    """
+    try:
+        response = requests.post(
+            "https://api.pollinations.ai/v1/video",
+            headers={
+                "Authorization": f"Bearer {POLLINATIONS_VIDEO_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"prompt": prompt},
+            timeout=120,
+        )
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "")
+        if "video" in content_type or "octet-stream" in content_type:
+            return "Here is your generated video!", response.content
+        # Some APIs return a URL instead of raw bytes
+        data = response.json()
+        video_url = data.get("url") or data.get("video_url")
+        if video_url:
+            video_response = requests.get(video_url, timeout=120)
+            video_response.raise_for_status()
+            return "Here is your generated video!", video_response.content
+        return "Video generation completed but no video data was returned.", None
+    except requests.HTTPError as exc:
+        return f"Video generation failed (HTTP {exc.response.status_code}): {exc}", None
+    except Exception as exc:
+        return f"Video generation failed: {exc}", None
+
+
 def speak(text: str) -> None:
     clean_text = remove_emojis(text).strip()
     if not clean_text:
@@ -148,6 +183,16 @@ def render_generated_image(image_bytes: bytes | None) -> None:
         st.image(generated_image, use_container_width=True)
     except Exception as exc:
         st.warning(f"Generated image could not be displayed: {exc}")
+
+
+def render_generated_video(video_bytes: bytes | None) -> None:
+    if not video_bytes:
+        return
+
+    try:
+        st.video(video_bytes)
+    except Exception as exc:
+        st.warning(f"Generated video could not be displayed: {exc}")
 
 
 def add_convo(name: str) -> None:
@@ -301,6 +346,7 @@ def render_main() -> None:
             if msg["ai"]:
                 st.write(msg["ai"])
             render_generated_image(msg.get("image_bytes"))
+            render_generated_video(msg.get("video_bytes"))
             render_feedback(idx)
 
         if st.session_state.pending_audio == str(idx):
@@ -316,16 +362,33 @@ def render_main() -> None:
         )
 
     with st.form("chat_form", clear_on_submit=True):
-        input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
+        input_col, send_col, upload_col, image_col, video_col = st.columns([5, 1, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Chat")
         upload_clicked = upload_col.form_submit_button("📥 Upload")
-        image_clicked = image_col.form_submit_button("🎨 Generate Image")
+        image_clicked = image_col.form_submit_button("🎨 Image")
+        video_clicked = video_col.form_submit_button("🎬 Video")
 
-        st.caption("Use `Chat` for replies and `🎨 Generate Image` for pictures.")
+        st.caption("Use `Chat` for replies, `🎨 Image` for pictures, and `🎬 Video` to generate a video.")
 
         if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
+            st.rerun()
+
+        if video_clicked:
+            clean_text = user_text.strip()
+            if not clean_text:
+                st.warning("Describe the video you want to generate.")
+                return
+
+            with st.spinner("MrBunny is filming... 🎬"):
+                reply, video_bytes = generate_video(clean_text)
+
+            convo["messages"].append(
+                {"user": clean_text, "ai": reply, "image_bytes": None, "video_bytes": video_bytes}
+            )
+            if not ghost_enabled:
+                save_device_chats()
             st.rerun()
 
         if send_clicked or image_clicked:
@@ -340,7 +403,7 @@ def render_main() -> None:
                 with st.spinner("MrBunny is drawing..."):
                     reply, image_bytes = generate_image(clean_text, api_key)
                 convo["messages"].append(
-                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
+                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes, "video_bytes": None}
                 )
                 if not ghost_enabled:
                     save_device_chats()
@@ -359,7 +422,7 @@ def render_main() -> None:
             with st.spinner("MrBunny is thinking..."):
                 reply = get_ai_response(combined_prompt, api_key, convo["messages"])
 
-            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
+            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None, "video_bytes": None})
             if not ghost_enabled:
                 save_device_chats()
             st.rerun()
