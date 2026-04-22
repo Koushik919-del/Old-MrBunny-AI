@@ -31,6 +31,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("feedback", {})
     st.session_state.setdefault("pending_audio", "")
     st.session_state.setdefault("browser_storage_loaded", False)
+    st.session_state.setdefault("browser_storage_attempts", 0)
     st.session_state.setdefault("ghost_conversations", set())
 
 
@@ -105,12 +106,21 @@ def load_browser_chats() -> None:
     stored_conversations = local_storage.getItem(BROWSER_CONVERSATIONS_KEY)
     stored_current = local_storage.getItem(BROWSER_CURRENT_CONVO_KEY)
 
+    if (
+        stored_conversations in (None, "")
+        and stored_current in (None, "")
+        and st.session_state.browser_storage_attempts < 1
+    ):
+        st.session_state.browser_storage_attempts += 1
+        st.rerun()
+
     parsed_conversations = _parse_storage_value(stored_conversations, {})
     st.session_state.conversations = _deserialize_conversations(parsed_conversations)
     st.session_state.current_convo = _parse_storage_value(stored_current, None)
     if st.session_state.current_convo not in st.session_state.conversations:
         st.session_state.current_convo = next(iter(st.session_state.conversations), None)
     st.session_state.ghost_conversations = set()
+    st.session_state.browser_storage_attempts = 0
     st.session_state.browser_storage_loaded = True
 
 
@@ -163,6 +173,7 @@ def clear_browser_chats() -> None:
     st.session_state.feedback = {}
     st.session_state.pending_audio = ""
     st.session_state.ghost_conversations = set()
+    st.session_state.browser_storage_attempts = 0
     save_browser_chats()
     st.rerun()
 
