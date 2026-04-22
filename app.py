@@ -21,8 +21,9 @@ from mrbunny_core import (
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 
 BROWSER_DEVICE_KEY = "mrbunny_device_id_v1"
-POLLINATIONS_VIDEO_API = "https://image.pollinations.ai/prompt/"  # placeholder base
-POLLINATIONS_VIDEO_KEY = "sk_ZUJpgD3ojyJVayJMNJGmw2MoHxURzyMv"
+PIXVERSE_TEXT_TO_VIDEO_URL = "https://app-api.pixverse.ai/openapi/v2/video/text/generate"
+PIXVERSE_STATUS_URL = "https://app-api.pixverse.ai/openapi/v2/video/result/{video_id}"
+PIXVERSE_API_KEY_FALLBACK = "sk-d60b94d64385c5108af8d111c80063c6"
 
 
 def init_session_state() -> None:
@@ -126,44 +127,61 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
-def generate_video(prompt: str, duration: int = 5, aspect_ratio: str = "16:9") -> tuple[str, bytes | None]:
+def generate_video(prompt: str, pixverse_api_key: str, duration: int = 5, aspect_ratio: str = "16:9") -> tuple[str, bytes | None]:
     """
-    Call the Pollinations.ai video generation API.
-    Uses the same /image/{prompt} endpoint as image generation,
-    but with a video-capable model (seedance).
-    Returns (reply_text, video_bytes_or_None).
+    Generate a video using the PixVerse API (text-to-video).
+    1. POST to kick off generation → get video_id
+    2. Poll status endpoint until complete (status=1)
+    3. Download and return the video bytes
     """
+    import time
+
+    headers = {
+        "API-KEY": pixverse_api_key,
+        "Ai-trace-id": uuid4().hex,  # must be unique per request
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "duration": duration,
+        "model": "v5",
+        "quality": "540p",
+    }
+
     try:
-        encoded_prompt = requests.utils.quote(prompt)
-        url = f"https://gen.pollinations.ai/image/{encoded_prompt}"
-        response = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {POLLINATIONS_VIDEO_KEY}"},
-            params={
-                "model": "seedance",
-                "duration": duration,
-                "aspectRatio": aspect_ratio,
-            },
-            timeout=180,
-        )
-        response.raise_for_status()
-        content_type = response.headers.get("Content-Type", "")
-        if "video" in content_type or "octet-stream" in content_type:
-            return "Here is your generated video! 🎬", response.content
-        # If a redirect/URL is returned as JSON
-        try:
-            data = response.json()
-            video_url = data.get("url") or data.get("video_url")
-            if video_url:
-                video_response = requests.get(video_url, timeout=180)
-                video_response.raise_for_status()
-                return "Here is your generated video! 🎬", video_response.content
-        except Exception:
-            pass
-        # Fallback: return raw bytes regardless
-        if response.content:
-            return "Here is your generated video! 🎬", response.content
-        return "Video generation completed but no video data was returned.", None
+        # Step 1: submit generation job
+        resp = requests.post(PIXVERSE_TEXT_TO_VIDEO_URL, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("ErrCode", -1) != 0:
+            return f"PixVerse error: {data.get('ErrMsg', 'Unknown error')}", None
+
+        video_id = data["Resp"]["video_id"]
+
+        # Step 2: poll until done (status 1=done, 5=in progress, 7=moderated, 8=failed)
+        status_url = PIXVERSE_STATUS_URL.format(video_id=video_id)
+        status_headers = {
+            "API-KEY": pixverse_api_key,
+            "Ai-trace-id": uuid4().hex,
+        }
+        for _ in range(60):  # poll up to ~3 minutes (60 × 3s)
+            time.sleep(3)
+            status_resp = requests.get(status_url, headers=status_headers, timeout=15)
+            status_resp.raise_for_status()
+            status_data = status_resp.json()
+            status = status_data.get("Resp", {}).get("status")
+
+            if status == 1:
+                video_url = status_data["Resp"]["url"]
+                video_bytes = requests.get(video_url, timeout=120).content
+                return "Here is your generated video! 🎬", video_bytes
+            elif status in (7, 8):
+                msg = "Content moderation failed." if status == 7 else "Generation failed."
+                return f"PixVerse: {msg}", None
+
+        return "Video generation timed out. Try again shortly.", None
+
     except requests.HTTPError as exc:
         return f"Video generation failed (HTTP {exc.response.status_code}): {exc}", None
     except Exception as exc:
@@ -332,6 +350,7 @@ def render_main() -> None:
 
     api_key = get_secret("OPENROUTER_API_KEY")
     ocr_api_key = get_secret("OCR_API_KEY")
+    pixverse_api_key = get_secret("PIXVERSE_API_KEY") or PIXVERSE_API_KEY_FALLBACK
 
     if not api_key:
         st.error(
@@ -339,6 +358,7 @@ def render_main() -> None:
             "`.streamlit/secrets.toml`, `secrets.toml`, or `.env`."
         )
         st.stop()
+
 
     if st.session_state.current_convo is None:
         st.info("Create or select a conversation to begin chatting with MrBunny.")
@@ -392,8 +412,8 @@ def render_main() -> None:
                 st.warning("Describe the video you want to generate.")
                 return
 
-            with st.spinner("MrBunny is filming... 🎬"):
-                reply, video_bytes = generate_video(clean_text)
+            with st.spinner("MrBunny is filming... 🎬 (this can take 1–3 minutes)"):
+                reply, video_bytes = generate_video(clean_text, pixverse_api_key)
 
             convo["messages"].append(
                 {"user": clean_text, "ai": reply, "image_bytes": None, "video_bytes": video_bytes}
@@ -401,50 +421,3 @@ def render_main() -> None:
             if not ghost_enabled:
                 save_device_chats()
             st.rerun()
-
-        if send_clicked or image_clicked:
-            clean_text = user_text.strip()
-            if not clean_text:
-                st.warning("Type a message before sending.")
-                return
-
-            should_generate_image = image_clicked or wants_image_generation(clean_text)
-
-            if should_generate_image:
-                with st.spinner("MrBunny is drawing..."):
-                    reply, image_bytes = generate_image(clean_text, api_key)
-                convo["messages"].append(
-                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes, "video_bytes": None}
-                )
-                if not ghost_enabled:
-                    save_device_chats()
-                st.rerun()
-
-            combined_prompt = clean_text
-            if uploaded_file is not None:
-                try:
-                    image = Image.open(uploaded_file).convert("RGB")
-                    ocr_text = extract_text_from_image(image, ocr_api_key)
-                    if ocr_text:
-                        combined_prompt = f"[Image text extracted: {ocr_text}]\n\n{clean_text}"
-                except Exception as exc:
-                    st.warning(f"Failed to process uploaded image: {exc}")
-
-            with st.spinner("MrBunny is thinking..."):
-                reply = get_ai_response(combined_prompt, api_key, convo["messages"])
-
-            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None, "video_bytes": None})
-            if not ghost_enabled:
-                save_device_chats()
-            st.rerun()
-
-
-def main() -> None:
-    init_session_state()
-    load_device_state()
-    render_sidebar()
-    render_main()
-
-
-if __name__ == "__main__":
-    main()
