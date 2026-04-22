@@ -30,6 +30,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("feedback", {})
     st.session_state.setdefault("pending_audio", "")
     st.session_state.setdefault("browser_storage_loaded", False)
+    st.session_state.setdefault("ghost_conversations", set())
 
 
 def get_local_storage() -> LocalStorage:
@@ -59,19 +60,29 @@ def load_browser_chats() -> None:
     st.session_state.current_convo = _parse_storage_value(stored_current, None)
     if st.session_state.current_convo not in st.session_state.conversations:
         st.session_state.current_convo = next(iter(st.session_state.conversations), None)
+    st.session_state.ghost_conversations = set()
     st.session_state.browser_storage_loaded = True
 
 
 def save_browser_chats() -> None:
+    persisted_conversations = {
+        convo_id: convo
+        for convo_id, convo in st.session_state.conversations.items()
+        if convo_id not in st.session_state.ghost_conversations
+    }
+    persisted_current = st.session_state.current_convo
+    if persisted_current not in persisted_conversations:
+        persisted_current = next(iter(persisted_conversations), None)
+
     local_storage = get_local_storage()
     local_storage.setItem(
         BROWSER_CONVERSATIONS_KEY,
-        json.dumps(st.session_state.conversations),
+        json.dumps(persisted_conversations),
         key="browser_conversations_saver",
     )
     local_storage.setItem(
         BROWSER_CURRENT_CONVO_KEY,
-        json.dumps(st.session_state.current_convo),
+        json.dumps(persisted_current),
         key="browser_current_saver",
     )
 
@@ -82,6 +93,7 @@ def clear_browser_chats() -> None:
     st.session_state.rename_mode = set()
     st.session_state.feedback = {}
     st.session_state.pending_audio = ""
+    st.session_state.ghost_conversations = set()
     save_browser_chats()
     st.rerun()
 
@@ -154,6 +166,7 @@ def add_convo(name: str) -> None:
     convo_id = str(uuid4())
     st.session_state.conversations[convo_id] = {"name": clean_name, "messages": []}
     st.session_state.current_convo = convo_id
+    st.session_state.ghost_conversations.discard(convo_id)
     save_browser_chats()
 
 
@@ -163,6 +176,7 @@ def delete_convo(convo_id: str) -> None:
 
     del st.session_state.conversations[convo_id]
     st.session_state.rename_mode.discard(convo_id)
+    st.session_state.ghost_conversations.discard(convo_id)
 
     if st.session_state.current_convo == convo_id:
         remaining = list(st.session_state.conversations.keys())
@@ -177,6 +191,14 @@ def rename_convo(convo_id: str, new_name: str) -> None:
         save_browser_chats()
 
 
+def toggle_ghost_mode(convo_id: str) -> None:
+    if convo_id in st.session_state.ghost_conversations:
+        st.session_state.ghost_conversations.remove(convo_id)
+    else:
+        st.session_state.ghost_conversations.add(convo_id)
+    save_browser_chats()
+
+
 def render_sidebar() -> None:
     with st.sidebar:
         st.title("💬 Conversations")
@@ -184,6 +206,17 @@ def render_sidebar() -> None:
         if st.button("Clear saved chats", use_container_width=True):
             clear_browser_chats()
         st.markdown("---")
+
+        current_convo = st.session_state.current_convo
+        ghost_enabled = current_convo in st.session_state.ghost_conversations if current_convo else False
+        ghost_label = "👻 Ghost On" if ghost_enabled else "👻 Ghost Off"
+        if st.button(ghost_label, use_container_width=True, help="Toggle whether the current chat is saved"):
+            if current_convo:
+                toggle_ghost_mode(current_convo)
+                st.rerun()
+
+        if ghost_enabled:
+            st.caption("This conversation will not be saved to browser storage.")
 
         with st.form("new_convo_form", clear_on_submit=True):
             new_convo_name = st.text_input("Create New Conversation")
@@ -265,6 +298,10 @@ def render_main() -> None:
         return
 
     convo = st.session_state.conversations[st.session_state.current_convo]
+    ghost_enabled = st.session_state.current_convo in st.session_state.ghost_conversations
+
+    if ghost_enabled:
+        st.info("Ghost mode is on for this chat. Messages here will not be saved.")
 
     for idx, msg in enumerate(convo["messages"]):
         with st.chat_message("user"):
@@ -288,20 +325,19 @@ def render_main() -> None:
         )
 
     with st.form("chat_form", clear_on_submit=True):
-        input_col, send_col, upload_col, image_col, ghost_col = st.columns([6, 1, 1, 1, 1])
+        input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Chat")
         upload_clicked = upload_col.form_submit_button("📥 Upload")
         image_clicked = image_col.form_submit_button("🎨 Generate Image")
-        ghost_clicked = ghost_col.form_submit_button("👻 Ghost")
 
-        st.caption("Use `Chat` for saved replies, `🎨 Generate Image` for pictures, and `👻 Ghost` for a one-off reply that is not saved.")
+        st.caption("Use `Chat` for replies and `🎨 Generate Image` for pictures.")
 
         if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
             st.rerun()
 
-        if send_clicked or image_clicked or ghost_clicked:
+        if send_clicked or image_clicked:
             clean_text = user_text.strip()
             if not clean_text:
                 st.warning("Type a message before sending.")
@@ -315,7 +351,8 @@ def render_main() -> None:
                 convo["messages"].append(
                     {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
                 )
-                save_browser_chats()
+                if not ghost_enabled:
+                    save_browser_chats()
                 st.rerun()
 
             combined_prompt = clean_text
@@ -331,16 +368,9 @@ def render_main() -> None:
             with st.spinner("MrBunny is thinking..."):
                 reply = get_ai_response(combined_prompt, api_key, convo["messages"])
 
-            if ghost_clicked:
-                with st.chat_message("user"):
-                    st.write(clean_text)
-                with st.chat_message("assistant"):
-                    if reply:
-                        st.write(reply)
-                return
-
             convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
-            save_browser_chats()
+            if not ghost_enabled:
+                save_browser_chats()
             st.rerun()
 
 
