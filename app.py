@@ -126,7 +126,7 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
-def generate_music(prompt: str, duration: int = 20) -> tuple[str, bytes | None]:
+def generate_music(prompt: str, duration: int = 1) -> tuple[str, bytes | None]:
     """Generate music using Pollinations ACE-Step (acestep). Returns (reply, mp3_bytes)."""
     try:
         resp = requests.post(
