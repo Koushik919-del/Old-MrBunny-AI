@@ -23,7 +23,7 @@ st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 BROWSER_DEVICE_KEY = "mrbunny_device_id_v1"
 POLLINATIONS_AUDIO_URL = "https://gen.pollinations.ai/v1/audio/speech"
 POLLINATIONS_KEY = "sk_3wQt8JR0UCFgemr2fnNDTfSbnq8MqguC"  # rotate this!
-
+ELEVEN_LABS_API_KEY = "sk_f8a4eeb628eabf377c963ceea90cffc54959e1d638edf030"
 
 def init_session_state() -> None:
     st.session_state.setdefault("conversations", {})
@@ -126,28 +126,41 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
-def generate_music(prompt: str, duration: int = 15) -> tuple[str, bytes | None]:
-    """Generate music using Pollinations ACE-Step (acestep). Returns (reply, mp3_bytes)."""
+def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
+    """Generate music using ElevenLabs API. Returns (reply, mp3_bytes)."""
+    api_key = get_secret("ELEVEN_LABS_API_KEY")
+    url = "https://api.elevenlabs.io/v1/music/generate"
+    
+    if not api_key:
+        return "Missing ElevenLabs API Key in secrets.", None
+
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "prompt": prompt,
+        # ElevenLabs handles duration internally based on prompt/credits
+    }
+    
     try:
-        resp = requests.post(
-            POLLINATIONS_AUDIO_URL,
-            headers={
-                "Authorization": f"Bearer {POLLINATIONS_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "acestep",
-                "input": prompt,
-                "duration": duration,
-                "instrumental": False,
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return "Here is your generated music! 🎵", resp.content
-    except requests.HTTPError as exc:
-        error_detail = exc.response.text
-        return f"Music generation failed (HTTP {exc.response.status_code}): {error_detail}", None
+        # ElevenLabs is high-performance, but music generation can still take a moment
+        resp = requests.post(url, headers=headers, json=data, timeout=150)
+        
+        # Enhanced error debugging
+        if resp.status_code != 200:
+            try:
+                error_info = resp.json()
+                error_msg = error_info.get("detail", {}).get("message", resp.text)
+            except:
+                error_msg = resp.text
+            return f"ElevenLabs Error (HTTP {resp.status_code}): {error_msg}", None
+
+        return "MrBunny has finished your masterpiece! 🎵", resp.content
+
+    except requests.exceptions.Timeout:
+        return "The request timed out. ElevenLabs is taking a while to compose.", None
     except Exception as exc:
         return f"Music generation failed: {exc}", None
 
