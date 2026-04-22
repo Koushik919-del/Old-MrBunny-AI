@@ -52,8 +52,14 @@ def load_browser_chats() -> None:
         return
 
     local_storage = get_local_storage()
-    stored_conversations = local_storage.getItem(BROWSER_CONVERSATIONS_KEY)
-    stored_current = local_storage.getItem(BROWSER_CURRENT_CONVO_KEY)
+    stored_conversations = local_storage.getItem(
+        BROWSER_CONVERSATIONS_KEY,
+        key="browser_conversations_loader",
+    )
+    stored_current = local_storage.getItem(
+        BROWSER_CURRENT_CONVO_KEY,
+        key="browser_current_loader",
+    )
 
     st.session_state.conversations = _parse_storage_value(stored_conversations, {})
     st.session_state.current_convo = _parse_storage_value(stored_current, None)
@@ -67,10 +73,12 @@ def save_browser_chats() -> None:
     local_storage.setItem(
         BROWSER_CONVERSATIONS_KEY,
         json.dumps(st.session_state.conversations),
+        key="browser_conversations_saver",
     )
     local_storage.setItem(
         BROWSER_CURRENT_CONVO_KEY,
         json.dumps(st.session_state.current_convo),
+        key="browser_current_saver",
     )
 
 
