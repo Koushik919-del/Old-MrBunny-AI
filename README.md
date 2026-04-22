@@ -2,9 +2,8 @@
 
 MrBunny AI is a Streamlit assistant with:
 
-- Google sign-in
 - Multi-conversation chat
-- Per-user saved chats
+- Browser-saved chats on the same device
 - Optional OCR text extraction from uploaded images
 - Voice playback with gTTS
 - OpenRouter-backed responses
@@ -22,9 +21,7 @@ pip install -r requirements.txt
 ```toml
 OPENROUTER_API_KEY = "your-openrouter-key"
 OCR_API_KEY = "your-ocr-space-key"
-GOOGLE_CLIENT_ID = "your-google-client-id"
-GOOGLE_CLIENT_SECRET = "your-google-client-secret"
-GOOGLE_REDIRECT_URI = "https://your-app.streamlit.app"
+POLLINATIONS_API_KEY = "your-pollinations-key"
 ```
 
 3. Run the app:
@@ -37,4 +34,4 @@ streamlit run app.py
 
 - Do not commit real API keys.
 - OCR is optional. If `OCR_API_KEY` is missing, image upload still works but text extraction is skipped.
-- Google sign-in requires a Google OAuth web app with the redirect URI matching your deployed app URL.
+- Chats are stored in the browser on the same device, so clearing browser storage can remove them.

@@ -3,3 +3,4 @@ gtts
 requests
 duckduckgo-search==6.3.7
 Pillow
+streamlit-local-storage
