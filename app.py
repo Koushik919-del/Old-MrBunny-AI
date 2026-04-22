@@ -128,12 +128,10 @@ def wants_image_generation(text: str) -> bool:
 
 def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
     """Generate music using ElevenLabs API. Returns (reply, mp3_bytes)."""
-    api_key = get_secret("ELEVEN_LABS_API_KEY")
+    # Hardcoded API Key for testing
+    api_key = "sk_f8a4eeb628eabf377c963ceea90cffc54959e1d638edf030"
     url = "https://api.elevenlabs.io/v1/music/generate"
     
-    if not api_key:
-        return "Missing ElevenLabs API Key in secrets.", None
-
     headers = {
         "xi-api-key": api_key,
         "Content-Type": "application/json"
@@ -141,16 +139,15 @@ def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
     
     data = {
         "prompt": prompt,
-        # ElevenLabs handles duration internally based on prompt/credits
     }
     
     try:
-        # ElevenLabs is high-performance, but music generation can still take a moment
+        # Using a longer timeout as music generation is a heavy task
         resp = requests.post(url, headers=headers, json=data, timeout=150)
         
-        # Enhanced error debugging
         if resp.status_code != 200:
             try:
+                # Try to get the specific error message from ElevenLabs
                 error_info = resp.json()
                 error_msg = error_info.get("detail", {}).get("message", resp.text)
             except:
@@ -163,7 +160,6 @@ def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
         return "The request timed out. ElevenLabs is taking a while to compose.", None
     except Exception as exc:
         return f"Music generation failed: {exc}", None
-
 
 def speak(text: str) -> None:
     clean_text = remove_emojis(text).strip()
