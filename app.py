@@ -288,19 +288,20 @@ def render_main() -> None:
         )
 
     with st.form("chat_form", clear_on_submit=True):
-        input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
+        input_col, send_col, upload_col, image_col, ghost_col = st.columns([6, 1, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Chat")
-        upload_clicked = upload_col.form_submit_button("Upload")
-        image_clicked = image_col.form_submit_button("Generate Image")
+        upload_clicked = upload_col.form_submit_button("📥 Upload")
+        image_clicked = image_col.form_submit_button("🎨 Generate Image")
+        ghost_clicked = ghost_col.form_submit_button("👻 Ghost")
 
-        st.caption("Use `Chat` for normal replies and `Generate Image` for pictures.")
+        st.caption("Use `Chat` for saved replies, `🎨 Generate Image` for pictures, and `👻 Ghost` for a one-off reply that is not saved.")
 
         if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
             st.rerun()
 
-        if send_clicked or image_clicked:
+        if send_clicked or image_clicked or ghost_clicked:
             clean_text = user_text.strip()
             if not clean_text:
                 st.warning("Type a message before sending.")
@@ -329,6 +330,14 @@ def render_main() -> None:
 
             with st.spinner("MrBunny is thinking..."):
                 reply = get_ai_response(combined_prompt, api_key, convo["messages"])
+
+            if ghost_clicked:
+                with st.chat_message("user"):
+                    st.write(clean_text)
+                with st.chat_message("assistant"):
+                    if reply:
+                        st.write(reply)
+                return
 
             convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
             save_browser_chats()
