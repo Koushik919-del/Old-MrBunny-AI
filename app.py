@@ -2,6 +2,7 @@ import re
 from io import BytesIO
 from uuid import uuid4
 
+import requests
 import streamlit as st
 from gtts import gTTS
 from PIL import Image
@@ -20,6 +21,8 @@ from mrbunny_core import (
 st.set_page_config(page_title="MrBunny AI", page_icon="🐰", layout="wide")
 
 BROWSER_DEVICE_KEY = "mrbunny_device_id_v1"
+POLLINATIONS_AUDIO_URL = "https://gen.pollinations.ai/v1/audio/speech"
+POLLINATIONS_KEY = "sk_3wQt8JR0UCFgemr2fnNDTfSbnq8MqguC"  # rotate this!
 
 
 def init_session_state() -> None:
@@ -89,7 +92,6 @@ def clear_saved_chats() -> None:
     st.rerun()
 
 
-
 def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
         "["
@@ -124,6 +126,31 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
+def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
+    """Generate music using Pollinations ACE-Step (acestep). Returns (reply, mp3_bytes)."""
+    try:
+        resp = requests.post(
+            POLLINATIONS_AUDIO_URL,
+            headers={
+                "Authorization": f"Bearer {POLLINATIONS_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "acestep",
+                "input": prompt,
+                "duration": duration,
+                "instrumental": False,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return "Here is your generated music! 🎵", resp.content
+    except requests.HTTPError as exc:
+        return f"Music generation failed (HTTP {exc.response.status_code}): {exc}", None
+    except Exception as exc:
+        return f"Music generation failed: {exc}", None
+
+
 def speak(text: str) -> None:
     clean_text = remove_emojis(text).strip()
     if not clean_text:
@@ -148,6 +175,12 @@ def render_generated_image(image_bytes: bytes | None) -> None:
         st.image(generated_image, use_container_width=True)
     except Exception as exc:
         st.warning(f"Generated image could not be displayed: {exc}")
+
+
+def render_generated_music(music_bytes: bytes | None) -> None:
+    if not music_bytes:
+        return
+    st.audio(music_bytes, format="audio/mp3")
 
 
 def add_convo(name: str) -> None:
@@ -301,6 +334,7 @@ def render_main() -> None:
             if msg["ai"]:
                 st.write(msg["ai"])
             render_generated_image(msg.get("image_bytes"))
+            render_generated_music(msg.get("music_bytes"))
             render_feedback(idx)
 
         if st.session_state.pending_audio == str(idx):
@@ -316,16 +350,34 @@ def render_main() -> None:
         )
 
     with st.form("chat_form", clear_on_submit=True):
-        input_col, send_col, upload_col, image_col = st.columns([6, 1, 1, 1])
+        input_col, send_col, upload_col, image_col, music_col = st.columns([5, 1, 1, 1, 1])
         user_text = input_col.text_input("Type your message:")
         send_clicked = send_col.form_submit_button("Chat")
         upload_clicked = upload_col.form_submit_button("📥 Upload")
-        image_clicked = image_col.form_submit_button("🎨 Generate Image")
+        image_clicked = image_col.form_submit_button("🎨 Image")
+        music_clicked = music_col.form_submit_button("🎵 Music")
 
-        st.caption("Use `Chat` for replies and `🎨 Generate Image` for pictures.")
+        st.caption("Use `Chat` for replies, `🎨 Image` for pictures, and `🎵 Music` to generate music.")
 
         if upload_clicked:
             st.session_state.show_image_uploader = not st.session_state.show_image_uploader
+            st.rerun()
+
+        if music_clicked:
+            clean_text = user_text.strip()
+            if not clean_text:
+                st.warning("Describe the music you want to generate.")
+                return
+            with st.spinner("MrBunny is composing... 🎵"):
+                reply, music_bytes = generate_music(clean_text)
+            convo["messages"].append({
+                "user": clean_text,
+                "ai": reply,
+                "image_bytes": None,
+                "music_bytes": music_bytes,
+            })
+            if not ghost_enabled:
+                save_device_chats()
             st.rerun()
 
         if send_clicked or image_clicked:
@@ -340,7 +392,7 @@ def render_main() -> None:
                 with st.spinner("MrBunny is drawing..."):
                     reply, image_bytes = generate_image(clean_text, api_key)
                 convo["messages"].append(
-                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes}
+                    {"user": clean_text, "ai": reply, "image_bytes": image_bytes, "music_bytes": None}
                 )
                 if not ghost_enabled:
                     save_device_chats()
@@ -359,78 +411,11 @@ def render_main() -> None:
             with st.spinner("MrBunny is thinking..."):
                 reply = get_ai_response(combined_prompt, api_key, convo["messages"])
 
-            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None})
+            convo["messages"].append({"user": clean_text, "ai": reply, "image_bytes": None, "music_bytes": None})
             if not ghost_enabled:
                 save_device_chats()
             st.rerun()
-# ── 1. Add this constant near your other URL constants ───────────────────────
-POLLINATIONS_AUDIO_URL = "https://gen.pollinations.ai/v1/audio/speech"
-POLLINATIONS_KEY = "sk_3wQt8JR0UCFgemr2fnNDTfSbnq8MqguC"  # rotate this!
- 
- 
-# ── 2. Add this function near your other generate_* functions ─────────────────
-def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
-    """Generate music using Pollinations ACE-Step (acestep). Returns (reply, mp3_bytes)."""
-    try:
-        resp = requests.post(
-            POLLINATIONS_AUDIO_URL,
-            headers={
-                "Authorization": f"Bearer {POLLINATIONS_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "acestep",
-                "input": prompt,
-                "duration": duration,
-                "instrumental": False,  # set True to skip vocals
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return "Here is your generated music! 🎵", resp.content
-    except requests.HTTPError as exc:
-        return f"Music generation failed (HTTP {exc.response.status_code}): {exc}", None
-    except Exception as exc:
-        return f"Music generation failed: {exc}", None
- 
- 
-# ── 3. Add this render helper near your other render_* functions ──────────────
-def render_generated_music(music_bytes: bytes | None) -> None:
-    if not music_bytes:
-        return
-    st.audio(music_bytes, format="audio/mp3")
- 
- 
-# ── 4. In render_main(), add "music_bytes": None to every convo message append:
-#       e.g. convo["messages"].append({"user": ..., "ai": ..., "image_bytes": None, "music_bytes": None})
- 
- 
-# ── 5. In the message display loop, add this after render_generated_image():
-#       render_generated_music(msg.get("music_bytes"))
- 
- 
-# ── 6. In your st.form, add a music button column, e.g.:
-#       input_col, send_col, upload_col, image_col, video_col, music_col = st.columns([4,1,1,1,1,1])
-#       music_clicked = music_col.form_submit_button("🎵 Music")
- 
- 
-# ── 7. Add this handler inside the form, alongside your other if send_clicked / video_clicked blocks:
-        if music_clicked:
-            clean_text = user_text.strip()
-            if not clean_text:
-                st.warning("Describe the music you want to generate.")
-                return
-            with st.spinner("MrBunny is composing... 🎵"):
-                reply, music_bytes = generate_music(clean_text)
-            convo["messages"].append({
-                "user": clean_text,
-                "ai": reply,
-                "image_bytes": None,
-                "music_bytes": music_bytes,
-            })
-            if not ghost_enabled:
-                save_device_chats()
-            st.rerun()
+
 
 def main() -> None:
     init_session_state()
