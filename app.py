@@ -363,7 +363,74 @@ def render_main() -> None:
             if not ghost_enabled:
                 save_device_chats()
             st.rerun()
-
+# ── 1. Add this constant near your other URL constants ───────────────────────
+POLLINATIONS_AUDIO_URL = "https://gen.pollinations.ai/v1/audio/speech"
+POLLINATIONS_KEY = "sk_3wQt8JR0UCFgemr2fnNDTfSbnq8MqguC"  # rotate this!
+ 
+ 
+# ── 2. Add this function near your other generate_* functions ─────────────────
+def generate_music(prompt: str, duration: int = 30) -> tuple[str, bytes | None]:
+    """Generate music using Pollinations ACE-Step (acestep). Returns (reply, mp3_bytes)."""
+    try:
+        resp = requests.post(
+            POLLINATIONS_AUDIO_URL,
+            headers={
+                "Authorization": f"Bearer {POLLINATIONS_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "acestep",
+                "input": prompt,
+                "duration": duration,
+                "instrumental": False,  # set True to skip vocals
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return "Here is your generated music! 🎵", resp.content
+    except requests.HTTPError as exc:
+        return f"Music generation failed (HTTP {exc.response.status_code}): {exc}", None
+    except Exception as exc:
+        return f"Music generation failed: {exc}", None
+ 
+ 
+# ── 3. Add this render helper near your other render_* functions ──────────────
+def render_generated_music(music_bytes: bytes | None) -> None:
+    if not music_bytes:
+        return
+    st.audio(music_bytes, format="audio/mp3")
+ 
+ 
+# ── 4. In render_main(), add "music_bytes": None to every convo message append:
+#       e.g. convo["messages"].append({"user": ..., "ai": ..., "image_bytes": None, "music_bytes": None})
+ 
+ 
+# ── 5. In the message display loop, add this after render_generated_image():
+#       render_generated_music(msg.get("music_bytes"))
+ 
+ 
+# ── 6. In your st.form, add a music button column, e.g.:
+#       input_col, send_col, upload_col, image_col, video_col, music_col = st.columns([4,1,1,1,1,1])
+#       music_clicked = music_col.form_submit_button("🎵 Music")
+ 
+ 
+# ── 7. Add this handler inside the form, alongside your other if send_clicked / video_clicked blocks:
+        if music_clicked:
+            clean_text = user_text.strip()
+            if not clean_text:
+                st.warning("Describe the music you want to generate.")
+                return
+            with st.spinner("MrBunny is composing... 🎵"):
+                reply, music_bytes = generate_music(clean_text)
+            convo["messages"].append({
+                "user": clean_text,
+                "ai": reply,
+                "image_bytes": None,
+                "music_bytes": music_bytes,
+            })
+            if not ghost_enabled:
+                save_device_chats()
+            st.rerun()
 
 def main() -> None:
     init_session_state()
