@@ -126,32 +126,43 @@ def wants_image_generation(text: str) -> bool:
     return any(phrase in lowered for phrase in image_phrases)
 
 
-def generate_video(prompt: str) -> tuple[str, bytes | None]:
+def generate_video(prompt: str, duration: int = 5, aspect_ratio: str = "16:9") -> tuple[str, bytes | None]:
     """
     Call the Pollinations.ai video generation API.
+    Uses the same /image/{prompt} endpoint as image generation,
+    but with a video-capable model (seedance).
     Returns (reply_text, video_bytes_or_None).
     """
     try:
-        response = requests.post(
-            "https://api.pollinations.ai/v1/video",
-            headers={
-                "Authorization": f"Bearer {POLLINATIONS_VIDEO_KEY}",
-                "Content-Type": "application/json",
+        encoded_prompt = requests.utils.quote(prompt)
+        url = f"https://gen.pollinations.ai/image/{encoded_prompt}"
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {POLLINATIONS_VIDEO_KEY}"},
+            params={
+                "model": "seedance",
+                "duration": duration,
+                "aspectRatio": aspect_ratio,
             },
-            json={"prompt": prompt},
-            timeout=120,
+            timeout=180,
         )
         response.raise_for_status()
         content_type = response.headers.get("Content-Type", "")
         if "video" in content_type or "octet-stream" in content_type:
-            return "Here is your generated video!", response.content
-        # Some APIs return a URL instead of raw bytes
-        data = response.json()
-        video_url = data.get("url") or data.get("video_url")
-        if video_url:
-            video_response = requests.get(video_url, timeout=120)
-            video_response.raise_for_status()
-            return "Here is your generated video!", video_response.content
+            return "Here is your generated video! 🎬", response.content
+        # If a redirect/URL is returned as JSON
+        try:
+            data = response.json()
+            video_url = data.get("url") or data.get("video_url")
+            if video_url:
+                video_response = requests.get(video_url, timeout=180)
+                video_response.raise_for_status()
+                return "Here is your generated video! 🎬", video_response.content
+        except Exception:
+            pass
+        # Fallback: return raw bytes regardless
+        if response.content:
+            return "Here is your generated video! 🎬", response.content
         return "Video generation completed but no video data was returned.", None
     except requests.HTTPError as exc:
         return f"Video generation failed (HTTP {exc.response.status_code}): {exc}", None
